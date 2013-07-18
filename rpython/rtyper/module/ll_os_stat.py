@@ -18,6 +18,7 @@ from rpython.rtyper.rtuple import TUPLE_TYPE
 from rpython.rtyper.tool import rffi_platform as platform
 from rpython.tool.pairtype import pairtype
 from rpython.tool.sourcetools import func_renamer
+from rpython.translator.platform import is_host_build
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
 # Support for float times is here.
@@ -25,7 +26,9 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 #   sub-second timestamps.
 # - TIMESPEC is defined when the "struct stat" contains st_atim field.
 
-if sys.platform.startswith('linux') or sys.platform.startswith('openbsd'):
+if not is_host_build():
+    TIMESPEC = None
+elif sys.platform.startswith('linux') or sys.platform.startswith('openbsd'):
     TIMESPEC = platform.Struct('struct timespec',
                                [('tv_sec', rffi.TIME_T),
                                 ('tv_nsec', rffi.LONG)])

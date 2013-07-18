@@ -346,6 +346,9 @@ def pick_platform(new_platform, cc):
     elif new_platform == 'distutils':
         from rpython.translator.platform.distutils_platform import DistutilsPlatform
         return DistutilsPlatform()
+    elif new_platform == 'emscripten':
+        from rpython.translator.platform.emscripten_platform import EmscriptenPlatform
+        return EmscriptenPlatform()
     else:
         raise ValueError("platform = %s" % (new_platform,))
 

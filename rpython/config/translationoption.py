@@ -30,6 +30,7 @@ PLATFORMS = [
     'host',
     'distutils',
     'arm',
+    'emscripten',
 ]
 
 translation_optiondescription = OptionDescription(

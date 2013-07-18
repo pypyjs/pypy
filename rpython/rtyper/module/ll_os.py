@@ -21,6 +21,7 @@ from rpython.rtyper.lltypesystem import rffi
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.tool import rffi_platform as platform
 from rpython.rlib import rposix
+from rpython.translator.platform import is_host_build
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.rtyper.lltypesystem.llmemory import itemoffsetof, offsetof
 from rpython.rtyper.lltypesystem.rstr import STR
@@ -147,7 +148,7 @@ class RegisterOs(BaseLazyRegistering):
 
     def __init__(self):
         self.configure(CConfig)
-        if not _WIN32:
+        if not _WIN32 and is_host_build():
             assert self.OFF_T_SIZE == rffi.sizeof(rffi.LONGLONG)
 
         if hasattr(os, 'getpgrp'):
