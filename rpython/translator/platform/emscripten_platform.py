@@ -1,4 +1,4 @@
-import py
+import py, os
 
 from rpython.translator.platform.posix import BasePosix, rpydir
 
@@ -11,7 +11,7 @@ class EmscriptenPlatform(BasePosix):
 
     Emscripten gives us the ability to compile from C to JavaScript while
     emulating a POSIX-like environment.  There are some subtlties, but it's
-    usually just a matter of using the right CC, CFLAGS, etc on top of a
+    mostly just a matter of using the right CC, CFLAGS, etc on top of a
     standard posixy build process.
     """
 
@@ -21,36 +21,60 @@ class EmscriptenPlatform(BasePosix):
     DEFAULT_CC = 'emcc'
     standalone_only = []
     link_flags = ()
-    # XXX TODO: custom -s SHELL_FILE
     cflags = [
-      #"-O1",  # enabling asm.js causes much error
-      #"--llvm-opts", "1",  # enabling these opts seems to corrupt memory somehow
-      "-s", "VERBOSE=1",
-      "-s", "ASSERTIONS=1",
-      "-s", "SAFE_HEAP=1",
-      "-s", "CORRUPTION_CHECK=1",
+      # Misc helpful/sensible flags.
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
-      "-s", "ASM_JS=0",
+      # Optimizations!
+      # These are things that we've found to work OK with the generated code.
+      # Try switching them off if the resulting javascript mis-behaves.
+      "-O2",
+      "-s", "FORCE_ALIGNED_MEMORY=1",
+      "-s", "DISABLE_UNSAFE_OPTS=1",
+      # This prevents llvm optimization from throwing stuff away.
+      # XXX TODO: probably there's a more nuanced way to achieve this...
+      "-s", "EXPORT_ALL=1",
+      # Growable memory is not compatible with asm.js.
+      # Set it to the largest value that seems to be supported by nodejs.
+      # XXX TODO: figure out a better memory-size story.
+      # XXX TODO: automatically limit the GC to this much memory.
       #"-s", "ALLOW_MEMORY_GROWTH=1",
-      "-s", "CORRECT_SIGNS=1",
-      "-s", "RELOOP=1",
-      "-s", "CHECK_HEAP_ALIGN=1",
-      "-s", "CHECK_OVERFLOWS=1",
-      "-s", "CHECK_SIGNED_OVERFLOWS=1",
-      "--closure", "0"
-      # XXX TODO:  embed the pypy root directory in the generated code?
+      "-s", "TOTAL_MEMORY=536870912",
+      # Extra sanity-checking.
+      # Enable these if things go wrong.
+      #"-s", "ASSERTIONS=1",
+      #"-s", "SAFE_HEAP=1",
+      #"-s", "CORRUPTION_CHECK=1",
+      #"-s", "CHECK_HEAP_ALIGN=1",
+      #"-s", "CHECK_OVERFLOWS=1",
+      #"-s", "CHECK_SIGNED_OVERFLOWS=1",
     ]
+    link_flags = cflags
 
-    # XXX TODO: the generated file is unexecutable javascript.
-    # So we have to run it under node.
-    # It would be better to make it a #!/usr/bin/env node file.
-    def execute(self, executable, args=None, *extra):
+    def execute(self, executable, args=None, *rest):
+        # The generated file is just javascript, so it's not executable.
+        # Instead we arrange for it to be run under node-js.
+        # XXX TODO: It would be better to make it have a #! line.
         if args is None:
             args = []
         args = [str(executable)] + args
         executable = "node"
-        return super(EmscriptenPlatform, self).execute(executable, args, *extra)
+        return super(EmscriptenPlatform, self).execute(executable, args, *rest)
+
+    def gen_makefile(self, *args, **kwds):
+        m = super(EmscriptenPlatform, self).gen_makefile(*args, **kwds)
+        # Embed parts of the build dir as files in the final executable.
+        # This is necessary so the pypy interpreter can find its files,
+        # but is useless for generic rpython apps.
+        # XXX TODO: find a more elegant way to achieve this only when needed.
+        # There's apparently a "VFS" system under development for emscripten
+        # which might make the need for this go away.
+        ldflags_def = m.lines[m.defs["LDFLAGS"]]
+        ldflags_def.value.extend([
+          "--embed-file", os.path.join(str(pypy_root_dir), "lib-python"),
+          "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy"),
+        ])
+        return m
 
     def include_dirs_for_libffi(self):
         raise NotImplementedError("libffi not supported")
