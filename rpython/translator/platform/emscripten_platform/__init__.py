@@ -40,6 +40,8 @@ class EmscriptenPlatform(BasePosix):
       # XXX TODO: ensure that pypy GC can detect when this runs out.
       #"-s", "ALLOW_MEMORY_GROWTH=1",
       "-s", "TOTAL_MEMORY=536870912",
+      # For compiling with JIT.
+      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
@@ -61,7 +63,10 @@ class EmscriptenPlatform(BasePosix):
         return super(EmscriptenPlatform, self).execute(executable, args, *rest)
 
     def include_dirs_for_libffi(self):
-        raise NotImplementedError("libffi not supported")
+        # libffi not supported; maybe we can hack around it?
+        # For now we let the code read some defns out of the standard header.
+        return [os.path.dirname(__file__)]
 
     def library_dirs_for_libffi(self):
-        raise NotImplementedError("libffi not supported")
+        # libffi not supported; maybe we can hack around it?
+        return []
