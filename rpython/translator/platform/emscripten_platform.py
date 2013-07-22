@@ -38,6 +38,7 @@ class EmscriptenPlatform(BasePosix):
       # Set it to the largest value that seems to be supported by nodejs.
       # XXX TODO: figure out a better memory-size story.
       # XXX TODO: automatically limit the GC to this much memory.
+      # XXX TODO: ensure that pypy GC can detect when this runs out.
       #"-s", "ALLOW_MEMORY_GROWTH=1",
       "-s", "TOTAL_MEMORY=536870912",
       # Extra sanity-checking.
@@ -53,28 +54,12 @@ class EmscriptenPlatform(BasePosix):
 
     def execute(self, executable, args=None, *rest):
         # The generated file is just javascript, so it's not executable.
-        # Instead we arrange for it to be run under node-js.
-        # XXX TODO: It would be better to make it have a #! line.
+        # Instead we arrange for it to be run with nodejs.
         if args is None:
             args = []
         args = [str(executable)] + args
         executable = "node"
         return super(EmscriptenPlatform, self).execute(executable, args, *rest)
-
-    def gen_makefile(self, *args, **kwds):
-        m = super(EmscriptenPlatform, self).gen_makefile(*args, **kwds)
-        # Embed parts of the build dir as files in the final executable.
-        # This is necessary so the pypy interpreter can find its files,
-        # but is useless for generic rpython apps.
-        # XXX TODO: find a more elegant way to achieve this only when needed.
-        # There's apparently a "VFS" system under development for emscripten
-        # which might make the need for this go away.
-        ldflags_def = m.lines[m.defs["LDFLAGS"]]
-        ldflags_def.value.extend([
-          "--embed-file", os.path.join(str(pypy_root_dir), "lib-python"),
-          "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy"),
-        ])
-        return m
 
     def include_dirs_for_libffi(self):
         raise NotImplementedError("libffi not supported")
