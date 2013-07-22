@@ -41,9 +41,11 @@ translation_optiondescription = OptionDescription(
     ChoiceOption("type_system", "Type system to use when RTyping",
                  ["lltype"], cmdline=None, default="lltype"),
     ChoiceOption("backend", "Backend to use for code generation",
-                 ["c"], default="c",
+                 ["c", "js"], default="c",
                  requires={
                      "c":      [("translation.type_system", "lltype")],
+                     "js":     [("translation.type_system", "lltype"),
+                                ("translation.platform", "emscripten")],
                      },
                  cmdline="-b --backend"),
 
@@ -267,6 +269,7 @@ translation_optiondescription = OptionDescription(
                                    ("translation.jit_backend", "arm")]},
                  requires={"emscripten": [
                             ("translation.gcrootfinder", "shadowstack"),
+                            ("translation.shared", False),
                            ]}
     ),
 

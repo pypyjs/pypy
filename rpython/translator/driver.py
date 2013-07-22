@@ -502,6 +502,16 @@ class TranslationDriver(SimpleTaskEngine):
         else:
             self.c_entryp = cbuilder.get_entry_point()
 
+    # For now, the "JS" backend is actually just the C backend with
+    # compiler set to `emcc`.  It's neater to expose this as a fully
+    # separate backend.
+
+    task_database_js = task_database_c
+
+    task_source_js = task_source_c
+
+    task_compile_js = task_compile_c
+
     @taskdef([STACKCHECKINSERTION, '?'+BACKENDOPT, RTYPE], "LLInterpreting")
     def task_llinterpret_lltype(self):
         from rpython.rtyper.llinterp import LLInterpreter
