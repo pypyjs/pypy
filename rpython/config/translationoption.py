@@ -266,11 +266,11 @@ translation_optiondescription = OptionDescription(
                  "target platform", ['host'] + PLATFORMS, default='host',
                  cmdline='--platform',
                  suggests={"arm": [("translation.gcrootfinder", "shadowstack"),
-                                   ("translation.jit_backend", "arm")]},
-                 requires={"emscripten": [
-                            ("translation.gcrootfinder", "shadowstack"),
-                            ("translation.shared", False),
-                           ]}
+                                   ("translation.jit_backend", "arm")],
+                           "emscripten": [
+                             ("translation.gcrootfinder", "shadowstack"),
+                             ("translation.shared", False),
+                           ]},
     ),
 
 ])
