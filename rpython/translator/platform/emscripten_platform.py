@@ -30,7 +30,6 @@ class EmscriptenPlatform(BasePosix):
       # Try switching them off if the resulting javascript mis-behaves.
       "-O2",
       "-s", "FORCE_ALIGNED_MEMORY=1",
-      "-s", "DISABLE_UNSAFE_OPTS=1",
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
       "-s", "EXPORT_ALL=1",
