@@ -49,9 +49,15 @@ class CPU_ASMJS(AbstractLLCPU):
     def make_execute_token(self, *ARGS):
         """Build and return a function for executing the given JIT token.
 
-        The compiled code is represented by an integer "function id".  We
-        need to look up the id, build the necessary frame, and then call the
+        Each chunk of compiled code is represented by an integer "function id".
+        We need to look up the id, build the necessary frame, and then call the
         helper function "jitInvoke" to execute the compiled function.
+
+        The compiled code will return either 0, indicating that it's done and
+        we can find the results in the frame, or a positive integer indicating
+        another compiled function that should be invoked.  We loop over this,
+        executing each function in turn until they're done.  It's a simple
+        simulation of GOTOs between the compiled chunks of code.
 
         This little trampoline is necessary because the main interpreter is
         running in asmjs mode, where it is forbidden to define new functions
@@ -59,13 +65,13 @@ class CPU_ASMJS(AbstractLLCPU):
         asmjs fast-path.
         """
         #  This is mostly copied from llsupport/llmodel.py, but with changes
-        #  to invoke the external javascript helper at the appropriate time.
+        #  to invoke the external javascript helper trampoline thingy.
         lst = [(i, history.getkind(ARG)[0]) for i, ARG in enumerate(ARGS)]
         kinds = unrolling_iterable(lst)
 
         def execute_token(executable_token, *args):
             clt = executable_token.compiled_loop_token
-            compiled_function_id = clt._compiled_function_id
+            func_id = clt._compiled_function_id
             frame_info = clt.frame_info
             frame = self.framecache.allocate_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
@@ -84,9 +90,18 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
-                ll_frame = support.jitInvoke(compiled_function_id, ll_frame)
+                # XXX TODO: try moving this loop inside jitInvoke().
+                # It would be cleaner and may allow the host JIT
+                # to optimise the loop a little better.  Maybe.
+                next_call = support.jitInvoke(func_id, ll_frame, 0)
+                while next_call != 0:
+                    # High 24 bits give the function id.
+                    # Low 8 bits give the target label within that function.
+                    func_id = next_call >> 8
+                    func_goto = next_call & 0xFF
+                    next_call = support.jitInvoke(func_id, ll_frame, func_goto)
             finally:
-                # XXX TODO: will the function ever replace its frame?
+                # XXX TODO: make sure we never need to re-allocate the frame
                 self.framecache.release_jitframe(frame)
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
@@ -128,3 +143,10 @@ class CPU_ASMJS(AbstractLLCPU):
         # XXX TODO: I don't think this is enough for correct handling of
         #           bridges, because new bridges need to start life valid
         looptoken.compiled_loop_token._loop_was_invalidated = True
+
+    def _decode_pos(self, deadframe, index):
+        descr = self.get_latest_descr(deadframe)
+        if descr.final_descr:
+            assert index == 0
+            return 0
+        return descr._asmjs_faillocs[index]

@@ -177,22 +177,28 @@ class ASMJSBuilder(object):
     XXX TODO: is this too general, or too broad?  try to do better!
     XXX TODO: benchmark against a generic switch-in-a-loop construct.
 
+    The compiled function always returns an integer.  If it returns zero then
+    execution has completed.  If it returns a positive integer, this identifies
+    another compiled function into which execution should jump.  We expect to
+    be run inside some sort of trampoline that can execute these jumps without
+    blowing the call stack.
+
     Trace boxes are assigned to variables of the appopriate type, and all such
     boxes must be declared before trying to emit any code.  You would typically
     do something like the following:
 
         jsbuilder = ASMJSBuilder(cpu)
 
-        for each box in the trace:
+        for [each box in the trace]:
             jsbuilder.allocate_variable(box)
-            if this is the last use of that box:
+            if [this is the last use of that box]:
                 jsbuilder.free_variable(box)
 
-        if the last operation is a JUMP:
-            jsbuilder.set_loop_entry_token(jump token)
+        if [the last operation is a local JUMP]:
+            jsbuilder.set_loop_entry_token(jump_token)
 
-        for each operation in the trace:
-            jsbuilder.emit_<whatever>() as needed.
+        for [each operation in the trace]:
+            jsbuilder.emit_[whatever]() as needed.
 
         src = jsbuilder.finish()
 
@@ -320,9 +326,10 @@ class ASMJSBuilder(object):
         label = len(self.token_labels) + 1
         self.token_labels[token] = label
         self.emit("if(goto|0 <= %d|0){\n" % (label,))
+        return label
 
     def emit(self, code):
-        """Emit the given string directy into the generated code."""
+        """Emit the given string directly into the generated code."""
         self.srcbuffer.append(code)
 
     def emit_statement(self, code):
@@ -453,6 +460,34 @@ class ASMJSBuilder(object):
         self.emit_value(value)
         self.emit(";\n")
 
+    def emit_jump(self, token):
+        """Emit a jump to the given token.
+
+        For jumps to the loop-entry token of the current function, this just
+        moves to the next iteration of the loop.  For other targets it looks
+        up the compiled functionid and goto address, and returns that value
+        to the trampoline.
+        """
+        assert isinstance(token, TargetToken)
+        if token == self.loop_entry_token:
+            # A local loop, just move to the next iteration.
+            self.emit_statement("continue")
+        else:
+            # An external loop, need to goto via trampoline.
+            self.emit_goto(token._asmjs_funcid, token._asmjs_label)
+
+    def emit_goto(self, funcid, label=0):
+        """Emit a goto to the funcid and label.
+
+        Essentially we just encode the funcid and label into a single integer
+        and return it.  We expect to be runninng inside some sort of trampoline
+        that can actually execute the goto.
+        """
+        assert funcid < 2**24
+        assert label < 0xFF
+        next_call = (funcid << 8) | label
+        self.emit_statement("return %d" % (next_call,))
+
     def emit_exit(self):
         """Emit an immediate return from the function."""
-        self.emit("return jitframe|0;\n")
+        self.emit("return 0;\n")

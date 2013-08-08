@@ -40,10 +40,12 @@ class AssemblerASMJS(object):
     def setup(self, looptoken):
         self.current_clt = looptoken.compiled_loop_token
         self.jsbuilder = ASMJSBuilder(self.cpu)
+        self.pending_target_tokens = []
 
     def teardown(self):
         self.output = None
         self.jsbuilder = None
+        self.pending_target_tokens = None
 
     def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace.
@@ -53,19 +55,18 @@ class AssemblerASMJS(object):
         function object.  It attached a "function id" to the CompiledLoopToken
         which can be used to invoke the new function.
         """
-        print "ASSEMBLING LOOP", looptoken
         clt = CompiledLoopToken(self.cpu, looptoken.number)
         looptoken.compiled_loop_token = clt
         self.setup(looptoken)
         clt.frame_info = self.frame_info
         clt.allgcrefs = []
-        clt._compiled_guard_ids = {}
         operations = self._prepare_loop(inputargs, operations, looptoken,
                                         clt.allgcrefs)
         self._find_loop_entry_token(operations)
         self._allocate_variables(inputargs, operations)
         self._assemble(inputargs, operations)
         clt._compiled_function_id = self._compile()
+        self._finalize_pending_target_tokens(clt._compiled_function_id)
         self.teardown()
 
     def assemble_bridge(self, faildescr, inputargs, operations,
@@ -79,9 +80,6 @@ class AssemblerASMJS(object):
         of the existing function for the bridged guard.
         """
         assert isinstance(faildescr, AbstractFailDescr)
-        print "ASSEMBLING BRIDGE", faildescr, original_loop_token
-        print "ERM NO, NOT WORKING YET"
-        return  # XXX TODO: bridges are not working yet
         self.setup(original_loop_token)
         operations = self._prepare_bridge(inputargs, operations,
                                           self.current_clt.allgcrefs,
@@ -89,8 +87,8 @@ class AssemblerASMJS(object):
         self._find_loop_entry_token(operations)
         self._allocate_variables(inputargs, operations)
         self._assemble(inputargs, operations)
-        compiled_guard_id = self.current_clt._compiled_guard_ids[faildescr]
-        self._recompile(compiled_guard_id)
+        self._recompile(faildescr._asmjs_funcid)
+        self._finalize_pending_target_tokens(faildescr._asmjs_funcid)
         self.teardown()
 
     def _prepare_loop(self, inputargs, operations, looptoken, allgcrefs):
@@ -212,6 +210,18 @@ class AssemblerASMJS(object):
         jssrc = self.jsbuilder.finish()
         support.jitRecompile(function_id, jssrc)
 
+    def _finalize_pending_target_tokens(self, function_id):
+        """Attach the given function id to any pending target tokens.
+
+        The target tokens have to be annotated with their compiled function
+        id before other code can generate jump to them.
+        """
+        for token in self.pending_target_tokens:
+            token._asmjs_funcid = function_id
+            # Let the argboxes be GC'd, we can't generate any
+            # more local jumps after compilation.
+            token._asmjs_argboxes = None
+
     #
     #  Code-Generating dispatch methods.
     #  There's a method here for every resop we support.
@@ -232,7 +242,9 @@ class AssemblerASMJS(object):
             assert isinstance(argbox, Box)
             argboxes[i] = argbox
         descr._asmjs_argboxes = argboxes
-        self.jsbuilder.emit_token_label(descr)
+        descr._asmjs_label = self.jsbuilder.emit_token_label(descr)
+        descr._asmjs_funcid = 0  # placeholder; this gets set after compilation
+        self.pending_target_tokens.append(descr)
 
     def genop_strgetitem(self, op):
         base = op.getarg(0)
@@ -296,10 +308,15 @@ class AssemblerASMJS(object):
         assert isinstance(descr, TargetToken)
         # Write arguments into the allocated boxes.
         argboxes = descr._asmjs_argboxes
+        if argboxes is None:
+            # XXX TODO: how do we write args for non-local jumps?
+            # Do we need to, or will bridge take care of that?
+            raise NotImplementedError("cant send args to non-local jump")
         assert len(argboxes) == op.numargs()
         for i in range(op.numargs()):
             box = op.getarg(i)
             self.jsbuilder.emit_assignment(argboxes[i], box)
+        self.jsbuilder.emit_jump(descr)
 
     def genop_finish(self, op):
         descr = op.getdescr()
@@ -318,44 +335,51 @@ class AssemblerASMJS(object):
         self.jsbuilder.emit_exit()
 
     def genop_guard_true(self, op):
-        descr = op.getdescr()
-        assert isinstance(descr, AbstractFailDescr)
-        # XXX TODO: compile each guard into a separate function
-        #           so it can be easily replaced by a bridge
-        #self.current_clt._compiled_guard_ids[descr] = 42
         self.jsbuilder.emit("if(!")
         self.jsbuilder.emit_value(op.getarg(0))
         self.jsbuilder.emit("){\n")
+        self._genop_guard_failure(op)
+        self.jsbuilder.emit("}\n")
+
+    def _genop_guard_failure(self, op):
+        descr = op.getdescr()
+        assert isinstance(descr, AbstractFailDescr)
         # Write the fail_descr into the frame slot.
         fail_descr = cast_instance_to_gcref(descr)
         addr = JitFrameAddr_descr()
         self.jsbuilder.emit_store(ConstPtr(fail_descr), addr, Int32)
-        # Write the output args into the frame.
+        # Write the failargs into the frame.
         offset = 0
         failargs = op.getfailargs()
         faillocs = [-1] * len(failargs)
         for i in range(len(failargs)):
             failarg = failargs[i]
+            # XXX TODO: alignment issues for multi-word values
             addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(offset))
             typ = HeapType.from_box(failarg)
             self.jsbuilder.emit_store(failarg, addr, typ)
             faillocs[i] = offset
             offset += typ.size
-        # Put the failloc info on the descr, for the runner to find.
-        # XXX TODO: this is an llmodel idiom, seems a bit janky here...
-        descr.rd_locs = faillocs
-        # Exit the frame.
-        self.jsbuilder.emit_exit()
-        self.jsbuilder.emit("}\n")
+        # Put the failloc info on the descr, where the runner
+        # and any future bridges can find them.
+        descr._asmjs_faillocs = faillocs
+        # Allocate a new function for this guard, and goto it.
+        # Initially this is a quick exit, but it might get recompiled
+        # into a bridge if the exit gets hot.
+        descr._asmjs_funcid = support.jitReserve()
+        self.jsbuilder.emit_goto(descr._asmjs_funcid)
 
     def not_implemented_op(self, op):
-        print "NOT IMPLEMENTED", op
-        for i in range(op.numargs()):
-            print "  ARG:", op.getarg(i)
-        print "  RES:", op.result
+        self._print_op(op)
         #os.write(2, '[asmjs] %s\n' % msg)
         self.jsbuilder.emit("// NOT IMPLEMENTED: %s\n" % (op,))
         #raise NotImplementedError("not implemented: " + str(op))
+
+    def _print_op(self, op):
+        print "OPERATION:", op
+        for i in range(op.numargs()):
+            print "  ARG:", op.getarg(i)
+        print "  RES:", op.result
 
 
 # Build a dispatch table mapping opnums to the method that emits code them.

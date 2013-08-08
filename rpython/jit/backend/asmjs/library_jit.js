@@ -7,16 +7,30 @@ var LibraryJIT = {
   //  JIT-compile a single function.
   //
   //  The input argument must be the heap address of a string containing
-  //  asmjs source code, defining a single function that takes a single
-  //  pointer argument and returns a pointer.
+  //  asmjs source code, defining a single function that takes two integer
+  //  arguments and returns an integer.
   //
   //  The source will be loaded, compiled, and linked with the main Module.
   //  An opaque integer "function id" will be returned, which can be passed
   //  to jitInvoke to invoke the newly-compiled function.
   //
-  jitCompile__deps: ['jitRecompile'],
+  jitCompile__deps: ['jitReserve', 'jitRecompile'],
   jitCompile: function(addr) {
     addr = addr|0;
+    var id = _jitReserve()|0;
+    return _jitRecompile(id, addr);
+  },
+
+  //  Reserve a function id for later use.
+  //
+  //  Rather than creating a new function straight away, this simply allocates
+  //  and returns a new function id.  The code can be filled in later by a
+  //  call to jitRecompile().
+  //
+  //  Attempts to invoke a not-yet-defined function will immediately return
+  //  zero.
+  //
+  jitReserve: function() {
     if (!Module._jitCompiledFunctions) {
       // We never allocate a function ID of zero.
       // In theory we could use zero to report compilation failure, but
@@ -25,7 +39,7 @@ var LibraryJIT = {
     }
     var id = Module._jitCompiledFunctions.length;
     Module._jitCompiledFunctions[id] = null;
-    return _jitRecompile(id, addr);
+    return id;
   },
 
   //  Re-compile a JIT-compiled function with new source code.
@@ -78,15 +92,23 @@ var LibraryJIT = {
 
   // Invoke a JIT-compiled function.
   //
-  // All JIT-compiled functions accept a single integer argument and
-  // produce an integer result.  You'll probably want to treat these like
-  // a void* to pass around data, but that's up to you.
+  // All JIT-compiled functions accept two integer arguments and produce
+  // an integer result.  You'll probably want to treat these like a void*
+  // to pass around data, but that's up to you.
   //
-  jitInvoke: function(id, input) {
+  // If you pass an id that does not have compiled code associated with it,
+  // it will produce a return value of zero.
+  //
+  jitInvoke: function(id, input1, input2) {
     id = id|0;
-    input = input|0;
+    input1 = input1|0;
+    input2 = input2|0;
     var func = Module._jitCompiledFunctions[id];
-    return func(input)|0;
+    if (func) {
+        return func(input1, input2)|0;
+    } else {
+        return 0|0;
+    }
   },
 
   // Free a JIT-compiled function.
