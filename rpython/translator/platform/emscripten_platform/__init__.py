@@ -51,7 +51,11 @@ class EmscriptenPlatform(BasePosix):
       #"-s", "CHECK_OVERFLOWS=1",
       #"-s", "CHECK_SIGNED_OVERFLOWS=1",
     ]
-    link_flags = cflags
+    link_flags = cflags + [
+      # This preserves sensible names in the generated JS.
+      # XXX TODO: Useful for debugging, but turn this off eventually.
+      "-g2",
+    ]
 
     def execute(self, executable, args=None, *rest):
         # The generated file is just javascript, so it's not executable.
@@ -70,3 +74,18 @@ class EmscriptenPlatform(BasePosix):
     def library_dirs_for_libffi(self):
         # libffi not supported; maybe we can hack around it?
         return []
+
+    def gen_makefile(self, *args, **kwds):
+        m = super(EmscriptenPlatform, self).gen_makefile(*args, **kwds)
+        # Embed parts of the build dir as files in the final executable.
+        # This is necessary so the pypy interpreter can find its files,
+        # but is useless for generic rpython apps.
+        # XXX TODO: find a more elegant way to achieve this only when needed.
+        # There's apparently a "VFS" system under development for emscripten
+        # which might make the need for this go away.
+        ldflags_def = m.lines[m.defs["LDFLAGS"]]
+        ldflags_def.value.extend([
+          "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
+          "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
+        ])
+        return m 

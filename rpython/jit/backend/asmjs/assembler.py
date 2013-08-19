@@ -32,6 +32,7 @@ class AssemblerASMJS(object):
         frame_info = lltype.malloc(jitframe.JITFRAMEINFO, flavor="raw")
         self.frame_info = rffi.cast(jitframe.JITFRAMEINFOPTR, frame_info)
         baseofs = self.cpu.get_baseofs_of_frame_field()
+        self.frame_info.clear()
         self.frame_info.update_frame_depth(baseofs, 32)
 
     def finish_once(self):

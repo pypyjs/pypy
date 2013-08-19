@@ -34,8 +34,8 @@ int pypy_main_function(int argc, char *argv[])
 
 #ifdef PYPY_USE_ASMGCC
     pypy_g_rpython_rtyper_lltypesystem_rffi_StackCounter.sc_inst_stacks_counter++;
-#endif
     pypy_asm_stack_bottom();
+#endif
     instrument_setup();
 
 #ifndef MS_WINDOWS
