@@ -23,6 +23,7 @@ class EmscriptenPlatform(BasePosix):
     link_flags = ()
     cflags = [
       # Misc helpful/sensible flags.
+      "-s", "VERBOSE=1",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
       # Optimizations!
@@ -41,6 +42,7 @@ class EmscriptenPlatform(BasePosix):
       #"-s", "ALLOW_MEMORY_GROWTH=1",
       "-s", "TOTAL_MEMORY=536870912",
       # For compiling with JIT.
+      # XXX TODO: only include this when jit is enabled.
       "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
       # Extra sanity-checking.
       # Enable these if things go wrong.

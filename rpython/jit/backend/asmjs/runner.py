@@ -8,7 +8,6 @@ from rpython.jit.metainterp import history
 
 from rpython.jit.backend.asmjs import support
 from rpython.jit.backend.asmjs.assembler import AssemblerASMJS
-from rpython.jit.backend.asmjs.framecache import JitFrameCache
 
 
 class CPU_ASMJS(AbstractLLCPU):
@@ -38,7 +37,6 @@ class CPU_ASMJS(AbstractLLCPU):
 
     def setup(self):
         self.assembler = AssemblerASMJS(self)
-        self.framecache = JitFrameCache(self)
 
     def setup_once(self):
         self.assembler.setup_once()
@@ -73,7 +71,7 @@ class CPU_ASMJS(AbstractLLCPU):
             clt = executable_token.compiled_loop_token
             func_id = clt._compiled_function_id
             frame_info = clt.frame_info
-            frame = self.framecache.allocate_jitframe(frame_info)
+            frame = self.gc_ll_descr.malloc_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
             locs = clt._ll_initial_locs
             if not self.translate_support_code:
@@ -101,8 +99,6 @@ class CPU_ASMJS(AbstractLLCPU):
                     func_goto = next_call & 0xFF
                     next_call = support.jitInvoke(func_id, ll_frame, func_goto)
             finally:
-                # XXX TODO: make sure we never need to re-allocate the frame
-                self.framecache.release_jitframe(frame)
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
             return ll_frame
