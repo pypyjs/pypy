@@ -23,7 +23,7 @@ class EmscriptenPlatform(BasePosix):
     link_flags = ()
     cflags = [
       # Misc helpful/sensible flags.
-      "-s", "VERBOSE=1",
+      #"-s", "VERBOSE=1",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
       # Optimizations!
@@ -31,6 +31,10 @@ class EmscriptenPlatform(BasePosix):
       # Try switching them off if the resulting javascript mis-behaves.
       "-O2",
       "-s", "FORCE_ALIGNED_MEMORY=1",
+      # Some parts of the JIT assume that a function is uniquely identified
+      # by its pointer.  This makes it so, at the cost of a lot of extra
+      # padding in the function type tables.
+      "-s", "ALIASING_FUNCTION_POINTERS=0",
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
       "-s", "EXPORT_ALL=1",
@@ -56,7 +60,7 @@ class EmscriptenPlatform(BasePosix):
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
       # XXX TODO: Useful for debugging, but turn this off eventually.
-      "-g2",
+      #"-g2",
     ]
 
     def execute(self, executable, args=None, *rest):
@@ -89,5 +93,6 @@ class EmscriptenPlatform(BasePosix):
         ldflags_def.value.extend([
           "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
           "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
+          "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
         ])
         return m 

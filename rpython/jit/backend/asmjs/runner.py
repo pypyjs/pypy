@@ -21,7 +21,7 @@ class CPU_ASMJS(AbstractLLCPU):
     """
 
     IS_64_BIT = False
-    JITFRAME_FIXED_SIZE = 0
+    from rpython.jit.backend.asmjs.arch import JITFRAME_FIXED_SIZE
     supports_floats = False  # XXX TODO: experiment with float support
     supports_longlong = False
     with_threads = False
@@ -114,14 +114,12 @@ class CPU_ASMJS(AbstractLLCPU):
                        original_loop_token, log=True):
         clt = original_loop_token.compiled_loop_token
         clt.compiling_a_bridge()
-        # XXX TODO: assembling bridges doesn't actually work yet...
         return self.assembler.assemble_bridge(faildescr, inputargs, operations,
                                               original_loop_token, log=log)
 
     def free_loop_and_bridges(self, compiled_loop_token):
         AbstractLLCPU.free_loop_and_bridges(self, compiled_loop_token)
-        support.jitFree(compiled_loop_token._compiled_function_id)
-        # XXX TODO: get compiled func for bridges, free them as well.
+        self.assembler.free_loop_and_bridges(compiled_loop_token)
 
     def cast_ptr_to_int(x):
         adr = llmemory.cast_ptr_to_adr(x)
