@@ -133,10 +133,7 @@ class CPU_ASMJS(AbstractLLCPU):
         support.jitReplace(old_func_id, new_func_id)
 
     def invalidate_loop(self, looptoken):
-        # XXX TODO: need assembler to look for and respect this flag
-        # XXX TODO: I don't think this is enough for correct handling of
-        #           bridges, because new bridges need to start life valid
-        looptoken.compiled_loop_token._loop_was_invalidated = True
+        self.assembler.invalidate_loop(looptoken)
 
     def _decode_pos(self, deadframe, index):
         descr = self.get_latest_descr(deadframe)

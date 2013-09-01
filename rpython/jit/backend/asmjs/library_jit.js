@@ -14,7 +14,7 @@ var LibraryJIT = {
   //  An opaque integer "function id" will be returned, which can be passed
   //  to jitInvoke to invoke the newly-compiled function.
   //
-  jitCompile__deps: ['jitReserve', 'jitRecompile'],
+  jitCompile__deps: ['jitReserve', 'jitRecompile', 'jitGuardWasTriggered'],
   jitCompile: function(addr) {
     addr = addr|0;
     var id = _jitReserve()|0;
@@ -116,6 +116,24 @@ var LibraryJIT = {
   jitFree: function(id) {
     id = id|0;
     Module._jitCompiledFunctions[id] = null;
+  },
+
+  jitTriggerGuard: function(id) {
+    if (!Module._jitTriggeredGuards) {
+      Module._jitTriggeredGuards = {};
+    }
+    Module._jitTriggeredGuards[i] = true;
+  },
+
+  jitGuardWasTriggered__deps: ['jitTriggerGuard'],
+  jitGuardWasTriggered: function(id) {
+    if (!Module._jitTriggeredGuards) {
+      return 0|0;
+    }
+    if (Module._jitTriggeredGuards[i]) {
+      return 1|0;
+    }
+    return 0|0;
   }
 }
 

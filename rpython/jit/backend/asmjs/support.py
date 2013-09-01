@@ -13,3 +13,7 @@ jitInvoke = rffi.llexternal("jitInvoke",
                             [rffi.INT, llmemory.GCREF, rffi.INT], rffi.INT)
 jitFree = rffi.llexternal("jitFree",
                           [rffi.INT], lltype.Void)
+jitTriggerGuard = rffi.llexternal("jitTriggerGuard",
+                                  [rffi.INT], lltype.Void)
+jitGuardWasTriggered = rffi.llexternal("jitGuardWasTriggered",
+                                       [rffi.INT], rffi.INT)

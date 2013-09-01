@@ -218,42 +218,28 @@ class UIntCast(ASMJSValue):
         jsbuilder.emit(") >>> 0")
 
 
-class ClassPtr(ASMJSValue):
-    """ASMJSValue representing the class of an object.
+class ClassPtrTypeID(ASMJSValue):
+    """ASMJSValue representing the typeid for a class pointer.
 
-    NOTE: the logic for this is copied from the x86 backend, and likely
-    needs some tidying up.  Hopefully it will actually work!
+    This is a special value for handling class comparisons when we're not
+    using type pointers.  It extracts an "expected type id" form the class
+    pointer, which can be compared agaist the first half-word in the object
+    pointer.  Logic shamelessly cargo-culted from x86 backend.
     """
-    type = REF
-    objptr = None
-#    _attrs_ = ('objptr',)
+    type = INT
+    classptr = None
 
-    def __init__(self, objptr):
-        self.objptr = objptr
+    def __init__(self, classptr):
+        self.classptr = classptr
 
     def emit_value(self, jsbuilder):
-        offset = jsbuilder.cpu.vtable_offset
-        if offset is not None:
-            val = HeapData(Int32, IntBinOp("+", self.objptr, ConstInt(offset)))
-        else:
-            sizeof_typeinfo = rffi.sizeof(GCData.TYPE_INFO)
-            type_info_group = llop.gc_get_type_info_group(llmemory.Address)
-            type_info_group = rffi.cast(lltype.Signed, type_info_group)
-            # XXX hard-coded assumption: to go from an object to its class
-            # we use the following algorithm:
-            #   - read the typeid from the object at offset 0;
-            #     this is a complete word i.e 4 bytes on 32-bit.
-            #   - keep the lower half of what is read there (i.e.
-            #     truncate to an unsigned 2-bytes value)
-            #   - multiply by 4 (on 32-bits only) and use it as an
-            #     offset in type_info_group
-            #   - add 16/32 bytes, to go past the TYPE_INFO structure
-            typeid = HeapData(Int32, self.objptr)
-            typeid = IntBinOp("&", typeid, ConstInt(0x0000FFFF))
-            tioffset = IntScaleOp(typeid, 4)
-            tioffset = IntBinOp("+", tioffset, ConstInt(sizeof_typeinfo))
-            val = IntBinOp("+", tioffset, ConstInt(type_info_group))
-        val.emit_value(jsbuilder)
+        sizeof_ti = rffi.sizeof(GCData.TYPE_INFO)
+        type_info_group = llop.gc_get_type_info_group(llmemory.Address)
+        type_info_group = rffi.cast(lltype.Signed, type_info_group)
+        expected_typeid = IntBinOp("-", classptr, sizeof_ti + type_info_group)
+        expected_typeid = IntBinOp(">>", expected_type_id, ConstInt(2))
+        expected_typeid = IntBinOp("&", expected_type_id, ConstInt(0xFFFF))
+        jsbuilder.emit_value(expected_typeid)
 
 
 class ASMJSOp(ASMJSValue):
@@ -346,6 +332,30 @@ class IntBinOp(ASMJSBinOp):
 class FloatBinOp(ASMJSBinOp):
     """ASMJSBinOp with a float value."""
     type = FLOAT
+
+
+class IntCallFunc(ASMJSValue):
+    """ASMJSValue representing result of external function call."""
+    type = INT
+
+    def __init__(self, funcname, callsig, arguments):
+        assert callsig[0] == "i"
+        self.funcname = funcname
+        self.callsig = callsig
+        self.arguments = arguments
+
+    def emit_value(self, jsbuilder):
+        funcname = "_" + self.funcname
+        jsbuilder.imported_functions[funcname] = funcname
+        jsbuilder.emit("(")
+        jsbuilder.emit(funcname)
+        jsbuilder.emit("(")
+        for i in xrange(len(self.arguments)):
+            if i > 0:
+                jsbuilder.emit(",")
+            jsbuilder.emit_value(self.arguments[i])
+        jsbuilder.emit(")")
+        jsbuilder.emit("|0)");
 
 
 class IntScaleOp(ASMJSOp):
@@ -814,4 +824,4 @@ class ASMJSBuilder(object):
         pass #self.emit("print('%s');\n" % (msg,))
 
     def emit_comment(self, msg):
-        self.emit("// %s\n" % (msg,))
+        pass #self.emit("// %s\n" % (msg,))
