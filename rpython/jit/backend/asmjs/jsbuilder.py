@@ -5,6 +5,7 @@ from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.metainterp.history import (ConstInt, ConstFloat, ConstPtr,
                                             TargetToken, AbstractValue, Box,
                                             Const, INT, REF, FLOAT)
+from rpython.jit.backend.asmjs.arch import DEBUGMODE
 
 
 class HeapType(object):
@@ -12,7 +13,7 @@ class HeapType(object):
 
     Instances of HeapType are used as simple type markers when generating
     heap loads and stores.  They control the particular view of the heap used
-    as well as the size of the resulting object.
+    as well as the size of the resulting value.
     """
 
     def __init__(self, lltype, heap_name, size, shift):
@@ -21,6 +22,18 @@ class HeapType(object):
         self.size = size
         self.shift = shift
         assert 2**shift == size
+
+    @staticmethod
+    def from_kind(kind):
+        """Determine the HeapType marker that matches the given ll kind."""
+        if kind == FLOAT:
+            return Float64
+        if kind == INT:
+            return Int32
+        if kind == REF:
+            return UInt32
+        print "unsupported kind: %s" % (kind,)
+        raise RuntimeError("unsupported kind: %s" % (kind,))
 
     @staticmethod
     def from_box(box):
@@ -86,27 +99,21 @@ Float32 = HeapType(FLOAT, "HF32", 4, 2)
 Float64 = HeapType(FLOAT, "HF64", 8, 3)
 
 
-# XXX TODO:  this whole notion of "ASMJSValue" makes for nice clean code,
-# but it means we're doing a bunch of mallocs and frees while rendering
-# the trace.  Try to find an equally nice way to do it without allocating.
-
 class ASMJSValue(AbstractValue):
     """An AbstractValue that knows how to render its own asmjs code."""
-#    _attrs_ = ()
 
     def emit_value(self, jsbuilder):
         raise NotImplementedError
 
 
-class OvfCheck(ASMJSValue):
-    """ASMJSValue representing the overflow check variable."""
-    type = INT
+class Placeholder(ASMJSValue):
+    """Placeholder integer, for values we want to fill in later."""
 
-    def __init__(self):
-        pass
+    def __init__(self, varname):
+        self.varname = varname
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("(ovf|0)")
+        jsbuilder.emit("(%s|0)" % (self.varname,))
 
 
 class JitFrameAddr(ASMJSValue):
@@ -148,6 +155,22 @@ class JitFrameAddr_descr(ASMJSValue):
         jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
 
 
+class JitFrameAddr_force_descr(ASMJSValue):
+    """ASMJSValue representing the address of jitframe.jf_force_descr
+
+    The builder will render this as a reference to the special 'jitframe'
+    variable, offset to point to the given field, appropriately cooerced.
+    """
+    type = REF
+
+    def __init__(self):
+        pass
+
+    def emit_value(self, jsbuilder):
+        offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_force_descr")
+        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+
+
 class JitFrameAddr_guard_exc(ASMJSValue):
     """ASMJSValue representing the address of jitframe.jf_guard_exc
 
@@ -165,7 +188,7 @@ class JitFrameAddr_guard_exc(ASMJSValue):
 
 
 class JitFrameAddr_gcmap(ASMJSValue):
-    """ASMJSValue representing the address of jitframe.jf_descr
+    """ASMJSValue representing the address of jitframe.jf_gcmap
 
     The builder will render this as a reference to the special 'jitframe'
     variable, offset to point to the given field, appropriately cooerced.
@@ -182,30 +205,29 @@ class JitFrameAddr_gcmap(ASMJSValue):
 
 class HeapData(ASMJSValue):
     """ASMJSValue representing data read from the heap."""
-    type = REF  # XXX TODO: not always a ref...
-    typ = None
+    type = REF  # XXX TODO: need to split this for different types
+    heaptype = None
     addr = None
-#    _attrs_ = ('typ', 'addr')
 
-    def __init__(self, typ, addr):
-        self.typ = typ
+    def __init__(self, heaptype, addr):
+        self.heaptype = heaptype
         self.addr = addr
 
     def emit_value(self, jsbuilder):
-        if self.typ.lltype == FLOAT:
+        if self.type == FLOAT:
             jsbuilder.emit("+")
-        jsbuilder.emit(self.typ.heap_name)
+        jsbuilder.emit(self.heaptype.heap_name)
         jsbuilder.emit("[(")
         jsbuilder.emit_value(self.addr)
         jsbuilder.emit(") >> ")
-        jsbuilder.emit(str(self.typ.shift))
+        jsbuilder.emit(str(self.heaptype.shift))
         jsbuilder.emit("]")
-        if self.typ.lltype == INT:
+        if self.type != INT:
             jsbuilder.emit("|0")
 
 
-class UIntCast(ASMJSValue):
-    """Cast an integer value to a uint."""
+class IntCast(ASMJSValue):
+    """Explicitly cast a value to type int."""
     type = INT
     value = None
 
@@ -215,7 +237,49 @@ class UIntCast(ASMJSValue):
     def emit_value(self, jsbuilder):
         jsbuilder.emit("(")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit(") >>> 0")
+        jsbuilder.emit("|0)")
+
+
+class SIntCast(ASMJSValue):
+    """Explicitly cast a value to type signed-int."""
+    type = INT
+    value = None
+
+    def __init__(self, value):
+        self.value = value
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("(~~(")
+        jsbuilder.emit_value(self.value)
+        jsbuilder.emit("|0))")
+
+
+class UIntCast(ASMJSValue):
+    """Explicitly cast a value to type unsigned-int."""
+    type = INT
+    value = None
+
+    def __init__(self, value):
+        self.value = value
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("((")
+        jsbuilder.emit_value(self.value)
+        jsbuilder.emit(") >>> 0)")
+
+
+class DblCast(ASMJSValue):
+    """Explicitly cast a value to type double."""
+    type = FLOAT
+    value = None
+
+    def __init__(self, value):
+        self.value = value
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("(+")
+        jsbuilder.emit_value(self.value)
+        jsbuilder.emit(")")
 
 
 class ClassPtrTypeID(ASMJSValue):
@@ -236,9 +300,10 @@ class ClassPtrTypeID(ASMJSValue):
         sizeof_ti = rffi.sizeof(GCData.TYPE_INFO)
         type_info_group = llop.gc_get_type_info_group(llmemory.Address)
         type_info_group = rffi.cast(lltype.Signed, type_info_group)
-        expected_typeid = IntBinOp("-", classptr, sizeof_ti + type_info_group)
-        expected_typeid = IntBinOp(">>", expected_type_id, ConstInt(2))
-        expected_typeid = IntBinOp("&", expected_type_id, ConstInt(0xFFFF))
+        expected_typeid = IntBinOp("-", self.classptr,
+                                   sizeof_ti + type_info_group)
+        expected_typeid = IntBinOp(">>", expected_typeid, ConstInt(2))
+        expected_typeid = IntBinOp("&", expected_typeid, ConstInt(0xFFFF))
         jsbuilder.emit_value(expected_typeid)
 
 
@@ -248,14 +313,13 @@ class ASMJSOp(ASMJSValue):
     This provides a simple way to build up value expressions and have them
     rendered inline by the ASMJSBuilder.
     """
-#    _attrs_ = ()
+    pass
 
 
 class ASMJSUnaryOp(ASMJSOp):
     """ASMJSOp representing a unary operation on a single value."""
     operator = ""
     operand = None
-#    _attrs_ = ('operator', 'operand')
 
     def __init__(self, operator, operand):
         self.operator = operator
@@ -283,7 +347,7 @@ class IntUnaryOp(ASMJSUnaryOp):
     type = INT
 
 
-class FloatUnaryOp(ASMJSUnaryOp):
+class DblUnaryOp(ASMJSUnaryOp):
     """ASMJSUnaryOp with a float value."""
     type = FLOAT
 
@@ -293,7 +357,6 @@ class ASMJSBinOp(ASMJSOp):
     binop = ""
     lhs = None
     rhs = None
-#    _attrs_ = ('binop', 'lhs', 'rhs')
 
     def __init__(self, binop, lhs, rhs):
         self.binop = binop
@@ -329,7 +392,7 @@ class IntBinOp(ASMJSBinOp):
     type = INT
 
 
-class FloatBinOp(ASMJSBinOp):
+class DblBinOp(ASMJSBinOp):
     """ASMJSBinOp with a float value."""
     type = FLOAT
 
@@ -355,7 +418,7 @@ class IntCallFunc(ASMJSValue):
                 jsbuilder.emit(",")
             jsbuilder.emit_value(self.arguments[i])
         jsbuilder.emit(")")
-        jsbuilder.emit("|0)");
+        jsbuilder.emit("|0)")
 
 
 class IntScaleOp(ASMJSOp):
@@ -452,12 +515,12 @@ class ASMJSBuilder(object):
         self.source_chunks = []
         self.num_variables = 0
         self.box_variables = {}
+        self.placeholder_variables = {}
         self.free_variables_intish = []
         self.free_variables_double = []
         self.token_labels = {}
         self.loop_entry_token = None
         self.imported_functions = {}
- 
 
     def finish(self):
         return "".join(self._build_prelude() +
@@ -485,9 +548,6 @@ class ASMJSBuilder(object):
         chunks.append('function F(jitframe, goto){\n')
         chunks.append('jitframe=jitframe|0;\n')
         chunks.append('goto=goto|0;\n')
-        chunks.append('var ovf=0;\n')
-        chunks.append('var itemp=0;\n')
-        chunks.append('var dtemp=0.0;\n')
         for box, varname in self.box_variables.iteritems():
             if box.type == FLOAT:
                 chunks.append("var %s=0.0;\n" % (varname,))
@@ -497,6 +557,8 @@ class ASMJSBuilder(object):
             chunks.append("var %s=0.0;\n" % (varname,))
         for varname in self.free_variables_intish:
             chunks.append("var %s=0;\n" % (varname,))
+        for varname, value in self.placeholder_variables.items():
+            chunks.append("var %s=%d;\n" % (varname, value))
         return chunks
 
     def _build_epilog(self):
@@ -554,6 +616,15 @@ class ASMJSBuilder(object):
                 self.free_variables_double.append(varname)
             else:
                 self.free_variables_intish.append(varname)
+
+    def allocate_placeholder(self):
+        """Allocate a placeholder integer, which you can give a value later."""
+        varname = "p%d" % (len(self.placeholder_variables) + 1,)
+        self.placeholder_variables[varname] = 0
+        return Placeholder(varname)
+
+    def fill_placeholder(self, placeholder, value):
+        self.placeholder_variables[placeholder.varname] = value
 
     def set_loop_entry_token(self, token):
         """Indicate which token is the target of the final JUMP operation.
@@ -676,16 +747,11 @@ class ASMJSBuilder(object):
             self.emit("|0")
         self.emit(";\n")
 
-    def emit_load_jitframe(self, addr):
+    def emit_assign_jitframe(self, value):
         self.emit("jitframe")
         self.emit("=")
-        self.emit(Int32.heap_name)
-        self.emit("[(")
-        self.emit_value(addr)
-        self.emit(") >> ")
-        self.emit(str(Int32.shift))
-        self.emit("]")
-        self.emit("|0;\n")
+        self.emit_value(value)
+        self.emit(";\n")
 
     def emit_store(self, value, addr, typ):
         """Emit a typed store operation of a value into the heap.
@@ -704,43 +770,6 @@ class ASMJSBuilder(object):
         self.emit("]=")
         self.emit_value(value)
         self.emit(";\n")
-
-    def emit_int_binop_ovf(self, dblop, intop, lhs, rhs, resbox):
-        self.emit("dtemp=((")
-        self.emit_value(lhs)
-        self.emit(")")
-        self.emit(dblop)
-        self.emit("(")
-        self.emit_value(rhs)
-        self.emit("));\n")
-        if intop == dblop:
-            self.emit("itemp=dtemp|0;\n")
-        else:
-            self.emit("itemp=(")
-            if intop[0].isalpha():
-                self.emit(intop)
-                self.emit("(")
-                self.emit_value(lhs)
-                self.emit(",")
-                self.emit_value(rhs)
-                self.emit(")")
-            else:
-                self.emit("(")
-                self.emit_value(lhs)
-                self.emit(")")
-                self.emit(intop)
-                self.emit("(")
-                self.emit_value(rhs)
-                self.emit(")")
-            self.emit(");\n")
-        self.emit("if(dtemp != +itemp){ ovf = 1; }\n")
-        if resbox is not None:
-            varname = self.allocate_variable(resbox)
-            self.emit(varname)
-            self.emit("=itemp;\n")
-
-    def emit_clear_ovf(self):
-        self.emit("ovf=0;\n")
 
     def emit_call(self, funcname, callsig, arguments, resbox):
         """Emit a call to a named function."""
@@ -762,7 +791,7 @@ class ASMJSBuilder(object):
             self.emit_value(arguments[i])
         self.emit(")")
         if callsig[0] == "i":
-            self.emit("|0");
+            self.emit("|0")
         self.emit(";\n")
 
     def emit_dyncall(self, funcaddr, callsig, arguments, resbox):
@@ -785,7 +814,7 @@ class ASMJSBuilder(object):
             self.emit_value(arguments[i])
         self.emit(")")
         if callsig[0] == "i":
-            self.emit("|0");
+            self.emit("|0")
         self.emit(";\n")
 
     def emit_jump(self, token):
@@ -820,8 +849,9 @@ class ASMJSBuilder(object):
         """Emit an immediate return from the function."""
         self.emit("return 0;\n")
 
-    def emit_debug(self, msg):
-        pass #self.emit("print('%s');\n" % (msg,))
-
     def emit_comment(self, msg):
-        pass #self.emit("// %s\n" % (msg,))
+        self.emit("// %s\n" % (msg,))
+
+    def emit_debug(self, msg):
+        if DEBUGMODE:
+            self.emit("print('%s');\n" % (msg,))

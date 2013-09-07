@@ -1,13 +1,33 @@
 
-from time import time as clock
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rtyper.lltypesystem import lltype, llmemory
 from rpython.rtyper.llinterp import LLInterpreter
+from rpython.rtyper.annlowlevel import llhelper, cast_instance_to_gcref
 from rpython.jit.backend.llsupport.llmodel import AbstractLLCPU
+from rpython.jit.backend.llsupport import jitframe
 from rpython.jit.metainterp import history
 
 from rpython.jit.backend.asmjs import support
 from rpython.jit.backend.asmjs.assembler import AssemblerASMJS
+
+
+def execute_trampoline(func_id, ll_frame):
+    frame = lltype.cast_opaque_ptr(jitframe.JITFRAMEPTR, ll_frame)
+    next_call = support.jitInvoke(func_id, ll_frame, 0)
+    frame = frame.resolve()
+    ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
+    while next_call != 0:
+        # High 24 bits give the function id.
+        # Low 8 bits give the target label within that function.
+        func_id = next_call >> 8
+        func_goto = next_call & 0xFF
+        next_call = support.jitInvoke(func_id, ll_frame, func_goto)
+        frame = frame.resolve()
+        ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
+    return ll_frame
+
+ARGS = [lltype.Signed, llmemory.GCREF]
+EXEFUNCPTR = lltype.Ptr(lltype.FuncType(ARGS, llmemory.GCREF))
 
 
 class CPU_ASMJS(AbstractLLCPU):
@@ -88,22 +108,17 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
-                # XXX TODO: try moving this loop inside jitInvoke().
-                # It would be cleaner and may allow the host JIT
-                # to optimise the loop a little better.  Maybe.
-                next_call = support.jitInvoke(func_id, ll_frame, 0)
-                while next_call != 0:
-                    # High 24 bits give the function id.
-                    # Low 8 bits give the target label within that function.
-                    func_id = next_call >> 8
-                    func_goto = next_call & 0xFF
-                    next_call = support.jitInvoke(func_id, ll_frame, func_goto)
+                ll_frame = execute_trampoline(func_id, ll_frame)
             finally:
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
             return ll_frame
 
         return execute_token
+
+    def get_execute_trampoline_adr(self):
+        exeptr = llhelper(EXEFUNCPTR, execute_trampoline)
+        return self.cast_ptr_to_int(exeptr)
 
     def compile_loop(self, inputargs, operations, looptoken,
                      log=True, name=''):
