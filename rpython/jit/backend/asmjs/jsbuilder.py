@@ -136,7 +136,7 @@ class JitFrameAddr_base(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_baseofs_of_frame_field()
-        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
 
 
 class JitFrameAddr_descr(ASMJSValue):
@@ -152,7 +152,7 @@ class JitFrameAddr_descr(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_descr")
-        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
 
 
 class JitFrameAddr_force_descr(ASMJSValue):
@@ -168,7 +168,7 @@ class JitFrameAddr_force_descr(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_force_descr")
-        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
 
 
 class JitFrameAddr_guard_exc(ASMJSValue):
@@ -184,7 +184,7 @@ class JitFrameAddr_guard_exc(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_guard_exc")
-        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
 
 
 class JitFrameAddr_gcmap(ASMJSValue):
@@ -200,7 +200,7 @@ class JitFrameAddr_gcmap(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_gcmap")
-        jsbuilder.emit("((jitframe|0) + (%d|0))" % (offset,))
+        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
 
 
 class HeapData(ASMJSValue):
@@ -235,9 +235,9 @@ class IntCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("(")
+        jsbuilder.emit("((")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit("|0)")
+        jsbuilder.emit(")|0)")
 
 
 class SIntCast(ASMJSValue):
@@ -277,9 +277,9 @@ class DblCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("(+")
+        jsbuilder.emit("(+(")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit(")")
+        jsbuilder.emit("))")
 
 
 class ClassPtrTypeID(ASMJSValue):
@@ -326,8 +326,6 @@ class ASMJSUnaryOp(ASMJSOp):
         self.operand = operand
 
     def emit_value(self, jsbuilder):
-        if self.type == FLOAT:
-            jsbuilder.emit("+")
         jsbuilder.emit("(")
         if self.operator[0].isalpha():
             jsbuilder.emit(self.operator)
@@ -336,20 +334,28 @@ class ASMJSUnaryOp(ASMJSOp):
             jsbuilder.emit(")")
         else:
             jsbuilder.emit(self.operator)
+            jsbuilder.emit("(")
             jsbuilder.emit_value(self.operand)
+            jsbuilder.emit(")")
         jsbuilder.emit(")")
-        if self.type != FLOAT:
-            jsbuilder.emit("|0")
 
 
 class IntUnaryOp(ASMJSUnaryOp):
     """ASMJSUnaryOp with an integer value."""
     type = INT
 
+    def emit_value(self, jsbuilder):
+        ASMJSUnaryOp.emit_value(self, jsbuilder)
+        jsbuilder.emit("|0")
+
 
 class DblUnaryOp(ASMJSUnaryOp):
     """ASMJSUnaryOp with a float value."""
     type = FLOAT
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("+")
+        ASMJSUnaryOp.emit_value(self, jsbuilder)
 
 
 class ASMJSBinOp(ASMJSOp):
@@ -364,8 +370,6 @@ class ASMJSBinOp(ASMJSOp):
         self.rhs = rhs
 
     def emit_value(self, jsbuilder):
-        if self.type == FLOAT:
-            jsbuilder.emit("+")
         jsbuilder.emit("(")
         if self.binop[0].isalpha():
             jsbuilder.emit(self.binop)
@@ -383,18 +387,24 @@ class ASMJSBinOp(ASMJSOp):
             jsbuilder.emit_value(self.rhs)
             jsbuilder.emit(")")
         jsbuilder.emit(")")
-        if self.type != FLOAT:
-            jsbuilder.emit("|0")
 
 
 class IntBinOp(ASMJSBinOp):
     """ASMJSBinOp with an integer value."""
     type = INT
 
+    def emit_value(self, jsbuilder):
+        ASMJSBinOp.emit_value(self, jsbuilder)
+        jsbuilder.emit("|0")
+
 
 class DblBinOp(ASMJSBinOp):
     """ASMJSBinOp with a float value."""
     type = FLOAT
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("+")
+        ASMJSBinOp.emit_value(self, jsbuilder)
 
 
 class IntCallFunc(ASMJSValue):
@@ -530,18 +540,18 @@ class ASMJSBuilder(object):
     def _build_prelude(self):
         chunks = []
         # Standard asmjs prelude stuff.
-        chunks.append('function(global, foreign, heap){\n')
+        chunks.append('function(stdlib, foreign, heap){\n')
         chunks.append('"use asm";\n')
-        chunks.append('var H8 = new global.Int8Array(heap);\n')
-        chunks.append('var H16 = new global.Int16Array(heap);\n')
-        chunks.append('var H32 = new global.Int32Array(heap);\n')
-        chunks.append('var HU8 = new global.Uint8Array(heap);\n')
-        chunks.append('var HU16 = new global.Uint16Array(heap);\n')
-        chunks.append('var HU32 = new global.Uint32Array(heap);\n')
-        chunks.append('var HF32 = new global.Float32Array(heap);\n')
-        chunks.append('var HF64 = new global.Float64Array(heap);\n')
+        chunks.append('var H8 = new stdlib.Int8Array(heap);\n')
+        chunks.append('var H16 = new stdlib.Int16Array(heap);\n')
+        chunks.append('var H32 = new stdlib.Int32Array(heap);\n')
+        chunks.append('var HU8 = new stdlib.Uint8Array(heap);\n')
+        chunks.append('var HU16 = new stdlib.Uint16Array(heap);\n')
+        chunks.append('var HU32 = new stdlib.Uint32Array(heap);\n')
+        chunks.append('var HF32 = new stdlib.Float32Array(heap);\n')
+        chunks.append('var HF64 = new stdlib.Float64Array(heap);\n')
         # Import any required functions from the Module object.
-        chunks.append('var imul = global.Math.imul;\n')
+        chunks.append('var imul = stdlib.Math.imul;\n')
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
@@ -718,7 +728,7 @@ class ASMJSBuilder(object):
         self.emit(varname)
         self.emit("=")
         self.emit_value(value)
-        self.emit("|0;\n")
+        self.emit(";\n")
 
     def emit_load(self, resbox, addr, typ=None):
         """Emit a typed load operation from the heap into a box.

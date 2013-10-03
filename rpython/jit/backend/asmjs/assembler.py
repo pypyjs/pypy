@@ -14,7 +14,7 @@ from rpython.jit.metainterp.resoperation import rop
 from rpython.jit.metainterp.history import (AbstractFailDescr, ConstInt,
                                             ConstPtr, Box, TargetToken, INT,
                                             REF, FLOAT, BoxInt, BoxFloat,
-                                            JitCellToken)
+                                            BoxPtr, JitCellToken)
 
 from rpython.jit.backend.asmjs import support
 from rpython.jit.backend.asmjs.arch import WORD, DEBUGMODE
@@ -54,7 +54,6 @@ class AssemblerASMJS(object):
 
     def __init__(self, cpu):
         self.cpu = cpu
-        assert self.cpu.gc_ll_descr.gcrootmap.is_shadow_stack
 
     def set_debug(self, v):
         return False
@@ -69,18 +68,21 @@ class AssemblerASMJS(object):
         self.reacquire_gil_addr = self.cpu.cast_ptr_to_int(reacquire_gil_func)
         gc_ll_descr = self.cpu.gc_ll_descr
         gc_ll_descr.initialize()
-        if hasattr(gc_ll_descr, 'minimal_size_in_nursery'):
-            self.gc_minimal_size_in_nursery = gc_ll_descr.minimal_size_in_nursery
+        if gc_ll_descr.get_malloc_slowpath_addr is not None:
+            nm = "malloc_nursery"
+            self.gc_malloc_nursery_addr = gc_ll_descr.get_malloc_fn_addr(nm)
+            nm = "malloc_array"
+            self.gc_malloc_array_addr = gc_ll_descr.get_malloc_fn_addr(nm)
+        if hasattr(gc_ll_descr, "malloc_str"):
+            nm = "malloc_str"
+            self.gc_malloc_str_addr = gc_ll_descr.get_malloc_fn_addr(nm)
         else:
-            self.gc_minimal_size_in_nursery = 0
-        if hasattr(gc_ll_descr, 'gcheaderbuilder'):
-            self.gc_size_of_header = gc_ll_descr.gcheaderbuilder.size_gc_header
+            self.gc_malloc_str_addr = None
+        if hasattr(gc_ll_descr, "malloc_unicode"):
+            nm = "malloc_unicode"
+            self.gc_malloc_unicode_addr = gc_ll_descr.get_malloc_fn_addr(nm)
         else:
-            self.gc_size_of_header = WORD 
-        self.gc_malloc_nursery_addr = gc_ll_descr.get_malloc_fn_addr("malloc_nursery")
-        self.gc_malloc_array_addr = gc_ll_descr.get_malloc_fn_addr("malloc_array")
-        self.gc_malloc_str_addr = gc_ll_descr.get_malloc_fn_addr("malloc_str")
-        self.gc_malloc_unicode_addr = gc_ll_descr.get_malloc_fn_addr("malloc_unicode")
+            self.gc_malloc_unicode_addr = None
 
     def finish_once(self):
         pass
@@ -276,7 +278,7 @@ class AssemblerASMJS(object):
         self.js.emit("if(")
         self.js.emit_value(IntBinOp("<", cur_frame_depth, p_frame_depth))
         self.js.emit("){\n")
-        newframe = BoxInt()
+        newframe = BoxPtr()
         self.js.emit_dyncall(ConstInt(self.cpu.realloc_frame), "iii",
                              [JitFrameAddr(), p_frame_depth], newframe)
         self.js.emit_assign_jitframe(newframe)
@@ -354,9 +356,7 @@ class AssemblerASMJS(object):
         integer "function id" that can be used to invoke the code.
         """
         jssrc = self.js.finish()
-        if self.has_unimplemented_ops:
-            print "TRACE CONTAINS UNIMPLEMENTED OPERATIONS!"
-            print jssrc
+        assert not self.has_unimplemented_ops
         return support.jitCompile(jssrc)
 
     def _recompile(self, function_id):
@@ -367,9 +367,7 @@ class AssemblerASMJS(object):
         any existing function associated with the given function id.
         """
         jssrc = self.js.finish()
-        if self.has_unimplemented_ops:
-            print "TRACE CONTAINS UNIMPLEMENTED OPERATIONS!"
-            print jssrc
+        assert not self.has_unimplemented_ops
         support.jitRecompile(function_id, jssrc)
 
     def _finalize_pending_target_tokens(self, function_id):
@@ -626,15 +624,16 @@ class AssemblerASMJS(object):
             dblres = DblBinOp(dblop, DblCast(lhs), DblCast(rhs))
             self.js.emit_assignment(dblresbox, dblres)
             if dblop == intop:
-                intres = IntUnaryOp("~", IntUnaryOp("~", dblresbox))
+                intres = IntUnaryOp("~~", dblresbox)
             else:
                 intres = IntBinOp(intop, lhs, rhs)
             self.js.emit_assignment(resbox, intres)
-            # The guard checks if the result makes it back to dbl unchanged.
+            # If the res makes it back to dbl unchanged, there was no overflow.
             self._prepare_guard_descr(guardop)
-            test = IntBinOp("!=", dblresbox, DblCast(resbox))
             if guardop.getopnum() == rop.GUARD_NO_OVERFLOW:
-                test = IntUnaryOp("!", test)
+                test = IntBinOp("==", dblresbox, DblCast(resbox))
+            else:
+                test = IntBinOp("!=", dblresbox, DblCast(resbox))
             self._genop_guard(test, guardop)
             # Discard temporary box.
             self.js.free_variable(dblresbox)
@@ -772,8 +771,12 @@ class AssemblerASMJS(object):
         exeaddr = self.execute_trampoline_addr
         funcid = descr.compiled_loop_token._compiled_function_id
         args = [ConstInt(funcid), frame]
-        resbox = BoxInt()
+        resbox = BoxPtr()
+        self.js.emit_statement("print('CALLING ASSEMLBER %s %s')" % (exeaddr, funcid,))
+        self._genop_gc_prepare()
         self.js.emit_dyncall(ConstInt(exeaddr), "iii", args, resbox)
+        self._genop_gc_recover()
+        self.js.emit_statement("print('CALLED ASSEMLBER')")
         # Load the descr resulting from that call.
         offset = self.cpu.get_ofs_of_frame_field('jf_descr')
         resdescr = HeapData(Int32, IntBinOp("+", resbox, ConstInt(offset)))
@@ -800,6 +803,7 @@ class AssemblerASMJS(object):
         # If so, then we're on the happy fast path.
         # Reset the vable token  (whatever the hell that means...)
         # and return the result from the frame.
+        self.js.emit_statement("print('WOOT, FAST PATH')")
         if jd.index_of_virtualizable >= 0:
             fielddescr = jd.vable_token_descr
             assert isinstance(fielddescr, FieldDescr)
@@ -814,6 +818,7 @@ class AssemblerASMJS(object):
             self.js.emit_load(op.result, addr, HeapType.from_kind(kind))
         self.js.emit("}else{\n")
         # If not, then we need to invoke a helper function.
+        self.js.emit_statement("print('BLEH, SLOW PATH')")
         helpaddr = self.cpu.cast_adr_to_int(jd.assembler_helper_adr)
         if op.result is None:
             callsig = "vii"
@@ -821,7 +826,9 @@ class AssemblerASMJS(object):
             callsig = "fii"
         else:
             callsig = "iii"
+        self._genop_gc_prepare()
         self.js.emit_dyncall(ConstInt(helpaddr), callsig, args, op.result)
+        self._genop_gc_recover()
         self.js.emit("}\n")
         # Cleanup.
         self._genop_check_guard_not_forced(guardop)
@@ -875,6 +882,8 @@ class AssemblerASMJS(object):
     def genop_finish(self, op):
         descr = op.getdescr()
         fail_descr = cast_instance_to_gcref(descr)
+        rgc._make_sure_does_not_move(fail_descr)
+        fail_descr = rffi.cast(lltype.Signed, fail_descr)
         # If there's a return value, write it into the frame.
         # It is always the first value in the frame.
         if op.numargs() == 1:
@@ -887,7 +896,7 @@ class AssemblerASMJS(object):
                 self._genop_store_gcmap(1)
         # Write the descr into the frame slot.
         addr = JitFrameAddr_descr()
-        self.js.emit_store(ConstPtr(fail_descr), addr, Int32)
+        self.js.emit_store(ConstInt(fail_descr), addr, Int32)
         self.js.emit_exit()
 
     #
@@ -923,6 +932,11 @@ class AssemblerASMJS(object):
 
     def genop_guard_value(self, op):
         self._prepare_guard_descr(op)
+        self.js.emit_statement("print('GUARD VALUE')")
+        self.js.emit("print("); self.js.emit_value(op.getarg(0)); self.js.emit(");\n")
+        self.js.emit_statement("print('=')")
+        self.js.emit("print("); self.js.emit_value(op.getarg(1)); self.js.emit(");\n")
+        self.js.emit_statement("print('?')")
         test = IntBinOp("==", op.getarg(0), op.getarg(1))
         self._genop_guard(test, op)
 
@@ -1040,7 +1054,6 @@ class AssemblerASMJS(object):
         # Put the failloc info on the descr, where the runner
         # and any future bridges can find them.
         descr._asmjs_faillocs = faillocs
-        # XXX TODO: emit check-frame-size-and-realloc-if-necessary logic
         # Execute the separately-compiled function implementing this guard.
         # Initially this is a quick exit, but it might get recompiled
         # into a bridge if the guard gets hot.
@@ -1127,14 +1140,19 @@ class AssemblerASMJS(object):
         gc_ll_descr = self.cpu.gc_ll_descr
         arraydescr = op.getdescr()
         assert isinstance(arraydescr, ArrayDescr)
-        assert arraydescr.basesize >= self.gc_minimal_size_in_nursery
+        if hasattr(gc_ll_descr, 'minimal_size_in_nursery'):
+            assert arraydescr.basesize >= gc_ll_descr.minimal_size_in_nursery
         kind = op.getarg(0).getint()
         itemsize = op.getarg(1).getint()
         lengthbox = op.getarg(2)
         assert isinstance(lengthbox, BoxInt)
         # Figure out the total size to be allocated.
         # It's gcheader + basesize + length*itemsize, rounded up to wordsize.
-        constsize = self.gc_size_of_header + arraydescr.basesize
+        if hasattr(gc_ll_descr, 'gcheaderbuilder'):
+            size_of_header = gc_ll_descr.gcheaderbuilder.size_gc_header
+        else:
+            size_of_header = WORD 
+        constsize = size_of_header + arraydescr.basesize
         if itemsize % WORD == 0:
             num_items = lengthbox
         else:
@@ -1241,12 +1259,15 @@ class AssemblerASMJS(object):
             assert (wbdescr.jit_wb_cards_set_byteofs ==
                     wbdescr.jit_wb_if_flag_byteofs)
             card_marking = True
+        # XXX TODO: card marking not working?
+        assert not card_marking
         obj = arguments[0]
         flagaddr = IntBinOp("+", obj, ConstInt(wbdescr.jit_wb_if_flag_byteofs))
         flagbyte = HeapData(Int8, flagaddr)
         flag_needs_wb = IntBinOp("&", flagbyte,
                                 ConstInt(wbdescr.jit_wb_if_flag_singlebyte))
-        flag_has_cards = IntBinOp("&", flagbyte,
+        if card_marking:
+            flag_has_cards = IntBinOp("&", flagbyte,
                                  ConstInt(wbdescr.jit_wb_cards_set_singlebyte))
         # Check if we actually need a WB at all.
         self.js.emit("if(")
@@ -1310,26 +1331,26 @@ class AssemblerASMJS(object):
         #   * deref it to get the root-stack top, and write the frame there.
         #   * in-place increment root-stack top via its pointer.
         gcrootmap = self.cpu.gc_ll_descr.gcrootmap
-        assert gcrootmap.is_shadow_stack
-        rstaddr = ConstInt(gcrootmap.get_root_stack_top_addr())
-        rst = HeapData(Int32, rstaddr)
-        self.js.emit_store(JitFrameAddr(), rst, Int32)
-        newrst = IntBinOp("+", rst, ConstInt(WORD))
-        self.js.emit_store(newrst, rstaddr, Int32)
+        if gcrootmap.is_shadow_stack:
+            rstaddr = ConstInt(gcrootmap.get_root_stack_top_addr())
+            rst = HeapData(Int32, rstaddr)
+            self.js.emit_store(JitFrameAddr(), rst, Int32)
+            newrst = IntBinOp("+", rst, ConstInt(WORD))
+            self.js.emit_store(newrst, rstaddr, Int32)
 
     def _genop_gc_recover(self, exclude=None):
         # Pop the jitframe from the root-stack.
         # This is an in-place decrement of root-stack top.
         gcrootmap = self.cpu.gc_ll_descr.gcrootmap
-        assert gcrootmap.is_shadow_stack
-        rstaddr = ConstInt(gcrootmap.get_root_stack_top_addr())
-        rst = HeapData(Int32, rstaddr)
-        newrst = IntBinOp("-", rst, ConstInt(WORD))
-        self.js.emit_store(newrst, rstaddr, Int32)
-        # For moving GCs, the address of the jitframe may have changed.
-        # Read the possibly-updated address out of root-stack top.
-        # NB: this instruction re-evaluates the HeapData expression in rst.
-        self.js.emit_assign_jitframe(HeapData(Int32, rst))
+        if gcrootmap.is_shadow_stack:
+            rstaddr = ConstInt(gcrootmap.get_root_stack_top_addr())
+            rst = HeapData(Int32, rstaddr)
+            newrst = IntBinOp("-", rst, ConstInt(WORD))
+            self.js.emit_store(newrst, rstaddr, Int32)
+            # For moving GCs, the address of the jitframe may have changed.
+            # Read the possibly-updated address out of root-stack top.
+            # NB: this instruction re-evaluates the HeapData expression in rst.
+            self.js.emit_assign_jitframe(HeapData(Int32, rst))
         # Similarly, read potential new addresss of any spilled boxes.
         for box in self.spilled_ref_locations:
             offset = self.spilled_ref_locations[box]
@@ -1419,26 +1440,3 @@ for name, value in AssemblerASMJS.__dict__.iteritems():
         opname = name[len('genop_'):]
         num = getattr(rop, opname.upper())
         genop_list[num] = value
-
-
-# For help during development, print the list of operations which have
-# not been implemented yet.
-from rpython.jit.metainterp.resoperation import opname
-i = rop._LAST
-while i > 0:
-    i -= 1
-    if i in opname:
-        if genop_list[i] != AssemblerASMJS.not_implemented_op:
-            continue
-        # We don't support floats yet, so we can ignore those.
-        if "FLOAT" in opname[i]:
-            continue
-        # The GC-rewriting step takes care of NEW* for us.
-        if opname[i].startswith("NEW"):
-            continue
-        # Stuff that doesn't seem to be implemented by other backends.
-        if opname[i] in ["MARK_OPAQUE_PTR", "VIRTUAL_REF", "QUASIIMMUT_FIELD",
-                         "RECORD_KNOWN_CLASS", "VIRTUAL_REF_FINISH",
-                         "CALL_PURE", "CALL_LOOPINVARIANT"]:
-            continue
-        print "WARNING: UNIMPLEMENTED ROP:", opname[i]

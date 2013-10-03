@@ -42,7 +42,7 @@ class CPU_ASMJS(AbstractLLCPU):
 
     IS_64_BIT = False
     from rpython.jit.backend.asmjs.arch import JITFRAME_FIXED_SIZE
-    supports_floats = False  # XXX TODO: experiment with float support
+    supports_floats = True
     supports_longlong = False
     with_threads = False
 
