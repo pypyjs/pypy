@@ -1,10 +1,13 @@
 
+import struct
+from binascii import unhexlify
 from rpython.memory.gctypelayout import GCData
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.metainterp.history import (ConstInt, ConstFloat, ConstPtr,
                                             TargetToken, AbstractValue, Box,
                                             Const, INT, REF, FLOAT)
+
 from rpython.jit.backend.asmjs.arch import DEBUGMODE
 
 
@@ -83,8 +86,9 @@ class HeapType(object):
                 return UInt32
             return Int32
         if size == 8:
-            if not sign:
-                raise NotImplementedError("unsupported 8-byte unsigned")
+            # XXX TODO: is signedness relevant for float types?
+            #if not sign:
+            #    raise NotImplementedError("unsupported 8-byte unsigned")
             return Float64
         raise NotImplementedError("unsupported box size: %d" % (size,))
 
@@ -136,7 +140,7 @@ class JitFrameAddr_base(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_baseofs_of_frame_field()
-        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
 class JitFrameAddr_descr(ASMJSValue):
@@ -152,7 +156,7 @@ class JitFrameAddr_descr(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_descr")
-        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
 class JitFrameAddr_force_descr(ASMJSValue):
@@ -168,7 +172,7 @@ class JitFrameAddr_force_descr(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_force_descr")
-        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
 class JitFrameAddr_guard_exc(ASMJSValue):
@@ -184,7 +188,7 @@ class JitFrameAddr_guard_exc(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_guard_exc")
-        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
 class JitFrameAddr_gcmap(ASMJSValue):
@@ -200,7 +204,7 @@ class JitFrameAddr_gcmap(ASMJSValue):
 
     def emit_value(self, jsbuilder):
         offset = jsbuilder.cpu.get_ofs_of_frame_field("jf_gcmap")
-        jsbuilder.emit("((jitframe|0) + (%d|0)|0)" % (offset,))
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
 class HeapData(ASMJSValue):
@@ -249,9 +253,9 @@ class SIntCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("(~~(")
+        jsbuilder.emit("(~(~(")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit("|0))")
+        jsbuilder.emit("|0)))")
 
 
 class UIntCast(ASMJSValue):
@@ -480,6 +484,7 @@ class ASMJSBuilder(object):
               <block N>
             }
             goto = 0;
+            continue
           }
         }
 
@@ -525,6 +530,7 @@ class ASMJSBuilder(object):
         self.source_chunks = []
         self.num_variables = 0
         self.box_variables = {}
+        self.immortal_boxes = {}
         self.placeholder_variables = {}
         self.free_variables_intish = []
         self.free_variables_double = []
@@ -569,13 +575,13 @@ class ASMJSBuilder(object):
             chunks.append("var %s=0;\n" % (varname,))
         for varname, value in self.placeholder_variables.items():
             chunks.append("var %s=%d;\n" % (varname, value))
+        chunks.append("if((goto|0) <= (0|0)){\n")
         return chunks
 
     def _build_epilog(self):
         chunks = []
-        # End the final labelled block, if any.
-        if len(self.token_labels) > 0:
-            chunks.append("}\n")
+        # End the final labelled block.
+        chunks.append("}\n")
         # End the loop, if we're in one.
         if self.loop_entry_token is not None:
             chunks.append("goto = 0|0;\n")
@@ -588,7 +594,7 @@ class ASMJSBuilder(object):
         chunks.append('}\n')
         return chunks
 
-    def allocate_variable(self, box):
+    def allocate_variable(self, box, immortal=False):
         """Allocate a variable to be used for the given box.
 
         If there is a previously-freed variable of appropriate type then
@@ -609,6 +615,8 @@ class ASMJSBuilder(object):
                 self.num_variables += 1
                 varname = "box" + str(self.num_variables)
             self.box_variables[box] = varname
+        if immortal:
+            self.immortal_boxes[box] = True
         return varname
 
     def free_variable(self, box):
@@ -620,6 +628,8 @@ class ASMJSBuilder(object):
         lifetimes.
         """
         assert isinstance(box, Box)
+        if box in self.immortal_boxes:
+            return
         varname = self.box_variables.pop(box, None)
         if varname is not None:
             if box.type == FLOAT:
@@ -655,16 +665,15 @@ class ASMJSBuilder(object):
         will jump control directly to that label.
         """
         assert isinstance(token, TargetToken)
-        # Close the previous block, if any.
-        if len(self.token_labels):
-            self.emit("}\n")
+        # Close the previous block.
+        self.emit("}\n")
         # If this is the loop token, enter the loop.
         if token == self.loop_entry_token:
             self.emit("while(1){\n")
         # Assign a label and begin the new block.
         label = len(self.token_labels) + 1
         self.token_labels[token] = label
-        self.emit("if(goto|0 <= %d|0){\n" % (label,))
+        self.emit("if((goto|0) <= (%d|0)){\n" % (label,))
         return label
 
     def emit(self, code):
@@ -690,9 +699,9 @@ class ASMJSBuilder(object):
     def emit_float_literal(self, value):
         """Emit a float literal value in the generated source."""
         value_as_str = str(value)
-        self.emit(value_as_str)
         if "." not in value_as_str:
-            self.emit(".0")
+            value_as_str += ".0"
+        self.emit(value_as_str)
 
     def emit_value(self, abval):
         """Emit a reference to an AbstractValue in the generated source.
@@ -706,16 +715,19 @@ class ASMJSBuilder(object):
         elif isinstance(abval, ASMJSValue):
             abval.emit_value(self)
         elif isinstance(abval, ConstInt):
-            self.emit_int_literal(abval.value)
+            intval = rffi.cast(lltype.Signed, abval.getint())
+            self.emit_int_literal(intval)
         elif isinstance(abval, ConstFloat):
-            self.emit_float_literal(str(abval.value))
+            self.emit_float_literal(abval.getfloat())
         elif isinstance(abval, ConstPtr):
-            self.emit_int_literal(self.cpu.cast_ptr_to_int(abval.value))
+            ptrval = rffi.cast(lltype.Signed, abval.getref_base())
+            self.emit_int_literal(ptrval)
         elif isinstance(abval, Box):
             if abval.type == FLOAT:
                 self.emit("+")
             if abval not in self.box_variables:
                 print "ERROR: box doesn't have a variable", abval
+                raise RuntimeError("box doesnt have a variable: %s" % (abval,))
             self.emit(self.box_variables[abval])
             if abval.type == INT or abval.type == REF:
                 self.emit("|0")
@@ -838,6 +850,7 @@ class ASMJSBuilder(object):
         assert isinstance(token, TargetToken)
         if token == self.loop_entry_token:
             # A local loop, just move to the next iteration.
+            self.emit_statement("goto = 0|0")
             self.emit_statement("continue")
         else:
             # An external loop, need to goto via trampoline.

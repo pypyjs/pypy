@@ -13,7 +13,8 @@ from rpython.jit.backend.asmjs.assembler import AssemblerASMJS
 
 def execute_trampoline(func_id, ll_frame):
     frame = lltype.cast_opaque_ptr(jitframe.JITFRAMEPTR, ll_frame)
-    next_call = support.jitInvoke(func_id, ll_frame, 0)
+    ll_frame_ptr = CPU_ASMJS.cast_ptr_to_int(ll_frame)
+    next_call = support.jitInvoke(func_id, ll_frame_ptr, 0)
     frame = frame.resolve()
     ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
     while next_call != 0:
@@ -21,7 +22,8 @@ def execute_trampoline(func_id, ll_frame):
         # Low 8 bits give the target label within that function.
         func_id = next_call >> 8
         func_goto = next_call & 0xFF
-        next_call = support.jitInvoke(func_id, ll_frame, func_goto)
+        ll_frame_ptr = CPU_ASMJS.cast_ptr_to_int(ll_frame)
+        next_call = support.jitInvoke(func_id, ll_frame_ptr, func_goto)
         frame = frame.resolve()
         ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
     return ll_frame

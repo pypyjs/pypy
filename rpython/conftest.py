@@ -55,7 +55,7 @@ def pytest_pycollect_makeitem(__multicall__,collector, name, obj):
 
 
 def pytest_addhooks(pluginmanager):
-    pluginmanager.register(LeakFinder())
+    pass #pluginmanager.register(LeakFinder())
 
 class LeakFinder:
     """Track memory allocations during test execution.

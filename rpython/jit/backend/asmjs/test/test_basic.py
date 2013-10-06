@@ -16,12 +16,16 @@ class JitASMJSMixin(support.LLJitMixin):
 
 class TestBasic(JitASMJSMixin, test_ajit.BaseLLtypeTests):
 
-    pass
+    def test_r_dict(self):
+        # a Struct that belongs to the hash table is not seen as being
+        # included in the larger Array
+        py.test.skip("issue with ll2ctypes")
 
-    #def test_r_dict(self):
-    #    # a Struct that belongs to the hash table is not seen as being
-    #    # included in the larger Array
-    #    py.test.skip("issue with ll2ctypes")
+    def test_free_object(self):
+        py.test.skip("issue of freeing, probably with ll2ctypes")
 
-    #def test_free_object(self):
-    #    py.test.skip("issue of freeing, probably with ll2ctypes")
+    def test_read_timestamp(self):
+        py.test.skip("not implemented yet; test requires longlong support")
+
+    def test_ulonglong_mod(self):
+        py.test.skip("not implemented yet; test requires longlong support")
