@@ -599,6 +599,9 @@ class FOREIGN(object):
                 if callsig[0] != "v":
                     return NUM(res)
             return dynCall
+        # Allow calling our own exported functions via ffi.
+        if name.startswith("_jit") and name[1:] in globals():
+            return globals()[name[1:]]
         raise AttributeError("Unknown foreign function: %s" % (name,))
 
 

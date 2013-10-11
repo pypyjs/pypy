@@ -8,6 +8,7 @@ from rpython.jit.backend.llsupport.descr import (unpack_fielddescr,
                                                  unpack_interiorfielddescr,
                                                  ArrayDescr, CallDescr,
                                                  FieldDescr)
+from rpython.jit.codewriter import longlong
 from rpython.rtyper.lltypesystem import lltype, rffi, rstr
 from rpython.rtyper.annlowlevel import cast_instance_to_gcref, llhelper
 from rpython.jit.backend.model import CompiledLoopToken
@@ -15,7 +16,7 @@ from rpython.jit.metainterp.resoperation import rop
 from rpython.jit.metainterp.history import (AbstractFailDescr, ConstInt,
                                             ConstPtr, Box, TargetToken, INT,
                                             REF, FLOAT, BoxInt, BoxFloat,
-                                            BoxPtr, JitCellToken)
+                                            BoxPtr, JitCellToken, ConstFloat)
 
 from rpython.jit.backend.asmjs import support
 from rpython.jit.backend.asmjs.arch import WORD, DEBUGMODE
@@ -24,7 +25,8 @@ from rpython.jit.backend.asmjs.jsbuilder import (ASMJSBuilder, IntBinOp,
                                                  HeapData, IntScaleOp,
                                                  HeapType, Int8, Int32,
                                                  UIntCast, DblCast, DblBinOp,
-                                                 IntCallFunc,
+                                                 DblUnaryOp,
+                                                 IntCast, IntCallFunc,
                                                  JitFrameAddr,
                                                  JitFrameAddr_base,
                                                  JitFrameAddr_gcmap,
@@ -708,6 +710,24 @@ class AssemblerASMJS(object):
     genop_cast_ptr_to_int = genop_same_as
     genop_cast_int_to_ptr = genop_same_as
 
+    def _genop_float_unaryop(operator):
+        def genop_float_unaryop(self, op):
+            val = DblUnaryOp(operator, op.getarg(0))
+            self.js.emit_assignment(op.result, val)
+        return genop_float_unaryop
+
+    genop_float_neg = _genop_float_unaryop("-")
+
+    def genop_float_abs(self, op):
+        zero = ConstFloat(longlong.getfloatstorage(0.0))
+        self.js.emit("if(")
+        self.js.emit_value(IntBinOp("<", op.getarg(0), zero))
+        self.js.emit("){\n")
+        self.js.emit_assignment(op.result, DblUnaryOp("-", op.getarg(0)))
+        self.js.emit("} else {\n")
+        self.js.emit_assignment(op.result, op.getarg(0))
+        self.js.emit("}\n")
+
     def _genop_float_binop(binop):
         def genop_float_binop(self, op):
             val = DblBinOp(binop, op.getarg(0), op.getarg(1))
@@ -717,19 +737,24 @@ class AssemblerASMJS(object):
     genop_float_add = _genop_float_binop("+")
     genop_float_sub = _genop_float_binop("-")
     genop_float_mul = _genop_float_binop("*")
+    genop_float_truediv = _genop_float_binop("/")
     genop_float_le = _genop_float_binop("<=")
     genop_float_eq = _genop_float_binop("==")
     genop_float_ne = _genop_float_binop("!=")
     genop_float_gt = _genop_float_binop(">")
     genop_float_ge = _genop_float_binop(">=")
 
-    # XXX TODO: wtf is this for and what can we do about it?
-
     def genop_convert_float_bytes_to_longlong(self, op):
         self.js.emit_assignment(op.result, op.getarg(0))
 
     def genop_convert_longlong_bytes_to_float(self, op):
         self.js.emit_assignment(op.result, op.getarg(0))
+
+    def genop_cast_float_to_int(self, op):
+        self.js.emit_assignment(op.result, IntCast(op.getarg(0)))
+
+    def genop_cast_int_to_float(self, op):
+        self.js.emit_assignment(op.result, DblCast(op.getarg(0)))
 
     def genop_read_timestamp(self, op):
         # Simulate processor time using gettimeofday().
