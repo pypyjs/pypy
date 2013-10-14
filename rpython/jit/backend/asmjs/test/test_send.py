@@ -7,4 +7,4 @@ from rpython.rlib import jit
 class TestSend(JitASMJSMixin, SendTests):
     # for the individual tests see
     # ====> ../../../metainterp/test/test_send.py
-
+    pass

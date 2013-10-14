@@ -42,6 +42,20 @@ var LibraryJIT = {
     return id;
   },
 
+
+  //  Check if a compiled function exists with given id.
+  //
+  jitExists: function(id) {
+    id = id|0;
+    if (!Module._jitCompiledFunctions) {
+      return 0;
+    }
+    if (Module._jitCompiledFunctions[id]) {
+      return 1;
+    }
+    return 0;
+  },
+
   //  Re-compile a JIT-compiled function with new source code.
   //
   //  The input arguments are an existing function id and the heap address
@@ -75,6 +89,9 @@ var LibraryJIT = {
       "Float32Array": Float32Array,
       "Float64Array": Float64Array
     };
+    if (typeof Module.tempDoublePtr === "undefined") {
+      Module.tempDoublePtr = tempDoublePtr;
+    }
     Module._jitCompiledFunctions[id] = mkfunc()(stdlib, Module, buffer);
     return id
   },

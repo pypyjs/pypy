@@ -1,3 +1,5 @@
+
+import py
 from rpython.jit.metainterp.test.test_virtual import VirtualTests, VirtualMiscTests
 from rpython.jit.backend.asmjs.test.test_basic import JitASMJSMixin
 
@@ -14,7 +16,9 @@ class TestsVirtual(JitASMJSMixin, VirtualTests):
     def _new():
         return MyClass()
 
+
 class TestsVirtualMisc(JitASMJSMixin, VirtualMiscTests):
     # for the individual tests see
     # ====> ../../../metainterp/test/test_virtual.py
     pass
+

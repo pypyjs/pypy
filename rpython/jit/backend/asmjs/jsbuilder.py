@@ -6,7 +6,7 @@ from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.metainterp.history import (ConstInt, ConstFloat, ConstPtr,
                                             TargetToken, AbstractValue, Box,
-                                            Const, INT, REF, FLOAT)
+                                            Const, INT, REF, FLOAT, BoxInt)
 
 from rpython.jit.backend.asmjs.arch import DEBUGMODE
 
@@ -120,6 +120,17 @@ class Placeholder(ASMJSValue):
         jsbuilder.emit("(%s|0)" % (self.varname,))
 
 
+class TempDoublePtr(ASMJSValue):
+    """ASMJSValue representing the address of double storage scratch-space."""
+    type = REF
+
+    def __init__(self):
+        pass
+
+    def emit_value(self, jsbuilder):
+        jsbuilder.emit("(tempDoublePtr|0)")
+
+
 class JitFrameAddr(ASMJSValue):
     """ASMJSValue representing the address of the active jitframe object."""
     type = REF
@@ -216,6 +227,8 @@ class HeapData(ASMJSValue):
     def __init__(self, heaptype, addr):
         self.heaptype = heaptype
         self.addr = addr
+        # Alignment issues mean we can't reliably read multi-word data...
+        assert heaptype.size <= 4
 
     def emit_value(self, jsbuilder):
         if self.type == FLOAT:
@@ -305,7 +318,7 @@ class ClassPtrTypeID(ASMJSValue):
         type_info_group = llop.gc_get_type_info_group(llmemory.Address)
         type_info_group = rffi.cast(lltype.Signed, type_info_group)
         expected_typeid = IntBinOp("-", self.classptr,
-                                   sizeof_ti + type_info_group)
+                                   ConstInt(sizeof_ti + type_info_group))
         expected_typeid = IntBinOp(">>", expected_typeid, ConstInt(2))
         expected_typeid = IntBinOp("&", expected_typeid, ConstInt(0xFFFF))
         jsbuilder.emit_value(expected_typeid)
@@ -556,8 +569,9 @@ class ASMJSBuilder(object):
         chunks.append('var HU32 = new stdlib.Uint32Array(heap);\n')
         chunks.append('var HF32 = new stdlib.Float32Array(heap);\n')
         chunks.append('var HF64 = new stdlib.Float64Array(heap);\n')
-        # Import any required functions from the Module object.
         chunks.append('var imul = stdlib.Math.imul;\n')
+        # Import any required names from the Module object.
+        chunks.append('var tempDoublePtr = foreign.tempDoublePtr|0;\n')
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
@@ -754,6 +768,19 @@ class ASMJSBuilder(object):
         """
         if typ is None:
             typ = HeapType.from_box(resbox)
+        # For doubles, we can't guarantee that the data is aligned.
+        # Read it as two 32bit ints into a properly aligned chunk.
+        if typ is Float64:
+            tempaddr = BoxInt()
+            self.emit_assignment(tempaddr, addr)
+            addr = TempDoublePtr()
+            first_word = HeapData(Int32, tempaddr)
+            self.emit_store(first_word, addr, Int32)
+            word = ConstInt(4)
+            second_word = HeapData(Int32, IntBinOp("+", tempaddr, word))
+            self.emit_store(second_word, IntBinOp("+", addr, word), Int32)
+            self.free_variable(tempaddr)
+        # Now we can do the actual load.
         varname = self.allocate_variable(resbox)
         self.emit(varname)
         self.emit("=")
@@ -784,6 +811,14 @@ class ASMJSBuilder(object):
             HEAPVIEW[(addr) >> shift] = value;
 
         """
+        # For doubles, we can't guarantee that the data is aligned.
+        # We have to store it into a properly aligned chunk, then
+        # copy to final destination as two 32-bit ints.
+        tempaddr = None
+        if typ is Float64:
+            tempaddr = BoxInt()
+            self.emit_assignment(tempaddr, addr)
+            addr = TempDoublePtr()
         self.emit(typ.heap_name)
         self.emit("[(")
         self.emit_value(addr)
@@ -792,6 +827,13 @@ class ASMJSBuilder(object):
         self.emit("]=")
         self.emit_value(value)
         self.emit(";\n")
+        if typ is Float64:
+            first_word = HeapData(Int32, addr)
+            self.emit_store(first_word, tempaddr, Int32)
+            word = ConstInt(4)
+            second_word = HeapData(Int32, IntBinOp("+", addr, word))
+            self.emit_store(second_word, IntBinOp("+", tempaddr, word), Int32)
+            self.free_variable(tempaddr)
 
     def emit_call(self, funcname, callsig, arguments, resbox):
         """Emit a call to a named function."""
@@ -816,7 +858,7 @@ class ASMJSBuilder(object):
             self.emit("|0")
         self.emit(";\n")
 
-    def emit_dyncall(self, funcaddr, callsig, arguments, resbox):
+    def emit_dyncall(self, funcaddr, callsig, arguments, resbox=None):
         """Emit a call to a function pointer."""
         assert len(callsig) == len(arguments) + 1
         # XXX TODO: we can give these shorter local names.
@@ -875,6 +917,11 @@ class ASMJSBuilder(object):
     def emit_comment(self, msg):
         self.emit("// %s\n" % (msg,))
 
-    def emit_debug(self, msg):
+    def emit_debug(self, msg, values=None):
         if DEBUGMODE:
-            self.emit("print('%s');\n" % (msg,))
+            self.emit("log(\"%s\"" % (msg,))
+            if values is not None:
+                for value in values:
+                    self.emit(",")
+                    self.emit_value(value)
+            self.emit(");\n")

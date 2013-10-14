@@ -3,7 +3,3 @@ from rpython.jit.backend.llsupport.test.zrpy_releasegil_test import ReleaseGILTe
 
 class TestShadowStack(ReleaseGILTests):
     gcrootfinder = "shadowstack"
-
-
-class TestAsmGcc(ReleaseGILTests):
-    gcrootfinder = "asmgcc"

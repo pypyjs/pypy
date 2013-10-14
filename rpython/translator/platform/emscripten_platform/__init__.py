@@ -93,6 +93,6 @@ class EmscriptenPlatform(BasePosix):
         ldflags_def.value.extend([
           "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
           "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
-          "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
+#          "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
         ])
         return m 

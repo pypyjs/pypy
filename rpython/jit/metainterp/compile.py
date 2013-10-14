@@ -712,6 +712,8 @@ class ResumeGuardForcedDescr(ResumeGuardDescr):
             faildescr = cpu.get_latest_descr(deadframe)
             assert isinstance(faildescr, ResumeGuardForcedDescr)
             faildescr.handle_async_forcing(deadframe)
+        except Exception:
+            raise
         finally:
             rstack._stack_criticalcode_stop()
 
