@@ -75,12 +75,13 @@ def compile(f, gc, **kwds):
     from rpython.jit.metainterp.warmspot import apply_jit
     from rpython.translator.c import genc
     #
-    t = TranslationContext()
-    t.config.translation.gc = gc
+    config = get_combined_translation_config(translating=True)
+    config.translation.gc = gc
     if gc != 'boehm':
-        t.config.translation.gcremovetypeptr = True
+        config.translation.gcremovetypeptr = True
     for name, value in kwds.items():
-        setattr(t.config.translation, name, value)
+        setattr(config.translation, name, value)
+    t = TranslationContext(config)
     ann = t.buildannotator()
     ann.build_types(f, [s_list_of_strings], main_entry_point=True)
     t.buildrtyper().specialize()
@@ -115,6 +116,7 @@ def run(cbuilder, args=''):
 
 class BaseFrameworkTests(object):
     gc = DEFL_GC
+    compile_kwds = {}
 
     def setup_class(cls):
         funcs = []
@@ -166,7 +168,7 @@ class BaseFrameworkTests(object):
             GcLLDescr_framework.DEBUG = True
             cls.cbuilder = compile(get_entry(allfuncs), cls.gc,
                                    gcrootfinder=cls.gcrootfinder, jit=True,
-                                   thread=True)
+                                   thread=True, **cls.compile_kwds)
         except ConfigError, e:        
             assert str(e).startswith('invalid value asmgcc')
             py.test.skip('asmgcc not supported')

@@ -6,6 +6,19 @@ from rpython.translator.platform.posix import BasePosix, rpydir
 pypy_root_dir = str(py.path.local(rpydir).join('..'))
 
 
+def find_executable(filename, environ=None):
+    """Find an executable by searching the current $PATH."""
+    if environ is None:
+        environ = os.environ
+    path = environ.get("PATH", "/usr/local/bin:/usr/bin:/bin").split(":")
+    for dirpath in path:
+        dirpath = os.path.abspath(dirpath.strip())
+        filepath = os.path.normpath(os.path.join(dirpath, filename))
+        if os.path.exists(filepath):
+            return filepath
+    return None
+
+
 class EmscriptenPlatform(BasePosix):
     """Platform for compiling to javascript via emscripten.
 
@@ -20,7 +33,7 @@ class EmscriptenPlatform(BasePosix):
     exe_ext = 'js'
     DEFAULT_CC = 'emcc'
     standalone_only = []
-    link_flags = ()
+
     cflags = [
       # Misc helpful/sensible flags.
       #"-s", "VERBOSE=1",
@@ -57,20 +70,28 @@ class EmscriptenPlatform(BasePosix):
       #"-s", "CHECK_OVERFLOWS=1",
       #"-s", "CHECK_SIGNED_OVERFLOWS=1",
     ]
+
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
       # XXX TODO: Useful for debugging, but turn this off eventually.
       #"-g2",
     ]
 
-    def execute(self, executable, args=None, *rest):
+    def execute(self, executable, args=None, *a, **k):
         # The generated file is just javascript, so it's not executable.
-        # Instead we arrange for it to be run with nodejs.
+        # Instead we arrange for it to be run with a javascript shell.
         if args is None:
             args = []
-        args = [str(executable)] + args
-        executable = "node"
-        return super(EmscriptenPlatform, self).execute(executable, args, *rest)
+        if isinstance(args, basestring):
+            args = str(executable) + " " + args
+        else:
+            args = [str(executable)] + args
+        jsshell = find_executable("js")
+        if jsshell is None:
+            jsshell = find_executable("node")
+            if jsshell is None:
+                raise RuntimeError("Could not find javascript shell")
+        return super(EmscriptenPlatform, self).execute(jsshell, args, *a, **k)
 
     def include_dirs_for_libffi(self):
         # libffi not supported; maybe we can hack around it?
@@ -93,6 +114,5 @@ class EmscriptenPlatform(BasePosix):
         ldflags_def.value.extend([
           "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
           "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
-#          "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
         ])
         return m 

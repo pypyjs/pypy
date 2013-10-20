@@ -90,6 +90,9 @@ var LibraryJIT = {
       "Float64Array": Float64Array
     };
     if (typeof Module.tempDoublePtr === "undefined") {
+      if (typeof tempDoublePtr === "undefined") {
+          throw "NO TEMP DOUBLE PTR";
+      }
       Module.tempDoublePtr = tempDoublePtr;
     }
     Module._jitCompiledFunctions[id] = mkfunc()(stdlib, Module, buffer);

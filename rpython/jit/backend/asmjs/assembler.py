@@ -1389,6 +1389,10 @@ class AssemblerASMJS(object):
         self.js.emit("}\n")
 
     def _genop_store_gcmap(self):
+        # If there's nothing spilled, no gcmap is needed.
+        if self.spilled_frame_offset == 0:
+            self.js.emit_store(ConstInt(0), JitFrameAddr_gcmap(), Int32)
+            return
         # Make a new gcmap sized to match current size of frame.
         gcmap_size = (self.spilled_frame_offset // WORD // 8) + 1
         gcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
@@ -1404,6 +1408,7 @@ class AssemblerASMJS(object):
         self.js.emit_store(gcmapref, JitFrameAddr_gcmap(), Int32)
         # We might have just stored some young pointers into the frame.
         # Emit a write barrier just in case.
+        # XXX TODO: x86 backend only does that when reloading after a gc. Why?
         self._genop_write_barrier([JitFrameAddr()])
 
     def genop_debug_merge_point(self, op):
@@ -1551,7 +1556,7 @@ class ctx_allow_gc(ctx_spill_to_frame):
         js = self.assembler.js
         # Spill any active REF boxes into the frame.
         for box in js.box_variables:
-            if box.type != REF:
+            if not box or box.type != REF:
                 continue
             if self.exclude is not None and box in self.exclude:
                 continue
@@ -1588,11 +1593,14 @@ class ctx_allow_gc(ctx_spill_to_frame):
             js.emit_assign_jitframe(HeapData(Int32, rst))
         # Similarly, read potential new addresss of any spilled boxes.
         for pos, box in self.assembler.spilled_frame_values.iteritems():
-            if box and box.type == REF:
-                addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(pos))
-                js.emit_load(box, addr, Int32)
+            if not box or box.type != REF:
+                continue
+            addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(pos))
+            js.emit_load(box, addr, Int32)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
+        # XXX TODO x86 backend seems to put a wb here.  Why?
+        #self._genop_write_barrier([JitFrameAddr()])
 
 
 # Build a dispatch table mapping opnums to the method that emits code for them.

@@ -44,8 +44,10 @@ translation_optiondescription = OptionDescription(
                  ["c", "js"], default="c",
                  requires={
                      "c":      [("translation.type_system", "lltype")],
-                     "js":     [("translation.type_system", "lltype"),
-                                ("translation.platform", "emscripten")],
+                     "js":     [("translation.type_system", "lltype")],
+                     },
+                 suggests={
+                     "js":     [("translation.platform", "emscripten")],
                      },
                  cmdline="-b --backend"),
 
@@ -94,8 +96,10 @@ translation_optiondescription = OptionDescription(
                  cmdline="--gcrootfinder",
                  requires={
                      "shadowstack": [("translation.gctransformer", "framework")],
-                     "asmgcc": [("translation.gctransformer", "framework"),
-                                ("translation.backend", "c")],
+                     "asmgcc": [("translation.gctransformer", "framework")],
+                    },
+                 suggests={
+                     "asmgcc": [("translation.backend", "c")],
                     }),
 
     # other noticeable options

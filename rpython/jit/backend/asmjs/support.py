@@ -20,7 +20,7 @@ import tempfile
 
 from rpython.rlib.parsing.tree import Nonterminal, Symbol, RPythonVisitor
 from rpython.rlib.parsing.ebnfparse import parse_ebnf, make_parse_function
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
+from rpython.rtyper.lltypesystem import lltype, llmemory, rffi, ll2ctypes
 from rpython.rtyper.extfunc import register_external
 
 # First, we have the definitions of the javascript JIT helper functions.
@@ -628,7 +628,14 @@ class FOREIGN(object):
             def dynCall(funcaddr, *args):
                 funcaddr = self._heap.validate_addr(funcaddr)
                 args = [conv(a) for (conv, a) in zip(argconvs, args)]
+                # We cheat slightly here.  The ctypes callback won't
+                # raise any exceptions, but it will record them in a
+                # special private area of the ll2ctypes module.
                 res = functype(funcaddr)(*args)
+                if ll2ctypes._callback_exc_info is not None:
+                    exc_typ, exc_val, exc_tb = ll2ctypes._callback_exc_info
+                    ll2ctypes._callback_exc_info = None
+                    raise exc_typ, exc_val, exc_tb
                 if callsig[0] != "v":
                     return NUM(res)
             return dynCall
