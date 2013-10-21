@@ -252,9 +252,9 @@ class IntCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("((")
+        jsbuilder.emit("((~(~(")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit(")|0)")
+        jsbuilder.emit(")))|0)")
 
 
 class SIntCast(ASMJSValue):
@@ -266,9 +266,9 @@ class SIntCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("(~(~(")
+        jsbuilder.emit("(~(~((")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit("|0)))")
+        jsbuilder.emit(")|0)))")
 
 
 class UIntCast(ASMJSValue):
@@ -280,9 +280,9 @@ class UIntCast(ASMJSValue):
         self.value = value
 
     def emit_value(self, jsbuilder):
-        jsbuilder.emit("((")
+        jsbuilder.emit("((~(~(")
         jsbuilder.emit_value(self.value)
-        jsbuilder.emit(") >>> 0)")
+        jsbuilder.emit("))) >>> 0)")
 
 
 class DblCast(ASMJSValue):

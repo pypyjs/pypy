@@ -73,7 +73,7 @@ class EmscriptenPlatform(BasePosix):
 
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
-      # XXX TODO: Useful for debugging, but turn this off eventually.
+      # Useful for debugging, but turn this off in production.
       #"-g2",
     ]
 

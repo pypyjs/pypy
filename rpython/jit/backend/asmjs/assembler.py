@@ -35,6 +35,8 @@ from rpython.jit.backend.asmjs.jsbuilder import (ASMJSBuilder, IntBinOp,
                                                  JitFrameAddr_descr)
 
 
+CONST_ZERO = ConstInt(0)
+
 GILFUNCPTR = lltype.Ptr(lltype.FuncType([], lltype.Void))
 
 
@@ -695,11 +697,11 @@ class AssemblerASMJS(object):
 
     def genop_int_force_ge_zero(self, op):
         arg = op.getarg(0)
-        less_than_zero = IntBinOp("<", arg, ConstInt(0))
+        less_than_zero = IntBinOp("<", arg, CONST_ZERO)
         self.js.emit("if(")
         self.js.emit_value(less_than_zero)
         self.js.emit("){\n")
-        self.js.emit_assignment(op.result, ConstInt(0))
+        self.js.emit_assignment(op.result, CONST_ZERO)
         self.js.emit("}else{\n")
         self.js.emit_assignment(op.result, arg)
         self.js.emit("}\n")
@@ -803,7 +805,7 @@ class AssemblerASMJS(object):
             i += 1
         self._genop_call(op, descr, addr, args)
         self.js.emit("if(")
-        self.js.emit_value(IntBinOp("==", op.result, ConstInt(0)))
+        self.js.emit_value(IntBinOp("==", op.result, CONST_ZERO))
         self.js.emit("){\n")
         self._genop_check_and_propagate_exception()
         self.js.emit("}\n")
@@ -860,7 +862,7 @@ class AssemblerASMJS(object):
         if op.numargs() == 2:
             virtref = op.getarg(1)
         else:
-            virtref = ConstInt(0)
+            virtref = CONST_ZERO
         jd = descr.outermost_jitdriver_sd
         assert jd is not None
         with ctx_guard_not_forced(self, guardop):
@@ -903,7 +905,7 @@ class AssemblerASMJS(object):
                 fielddescr = jd.vable_token_descr
                 assert isinstance(fielddescr, FieldDescr)
                 fieldaddr = IntBinOp("+", virtref, ConstInt(fielddescr.offset)) 
-                self.js.emit_store(ConstInt(0), fieldaddr, Int32)
+                self.js.emit_store(CONST_ZERO, fieldaddr, Int32)
             if op.result is not None:
                 kind = op.result.type
                 descr = self.cpu.getarraydescr_for_frame(kind)
@@ -1003,7 +1005,7 @@ class AssemblerASMJS(object):
 
     def genop_guard_isnull(self, op):
         self._prepare_guard_descr(op)
-        test = IntBinOp("==", op.getarg(0), ConstInt(0))
+        test = IntBinOp("==", op.getarg(0), CONST_ZERO)
         self._genop_guard(test, op)
 
     def genop_guard_nonnull(self, op):
@@ -1072,14 +1074,14 @@ class AssemblerASMJS(object):
             self.js.emit_store(excval, JitFrameAddr_guard_exc(), Int32)
         else:
             self.js.emit_assignment(op.result, excval)
-        self.js.emit_store(ConstInt(0), pos_exctyp, Int32)
-        self.js.emit_store(ConstInt(0), pos_excval, Int32)
+        self.js.emit_store(CONST_ZERO, pos_exctyp, Int32)
+        self.js.emit_store(CONST_ZERO, pos_excval, Int32)
 
     def genop_guard_no_exception(self, op):
         self._prepare_guard_descr(op)
         pos_exctyp = ConstInt(self.cpu.pos_exception())
         exctyp = HeapData(Int32, pos_exctyp)
-        test = IntBinOp("==", exctyp, ConstInt(0))
+        test = IntBinOp("==", exctyp, CONST_ZERO)
         self._genop_guard(test, op)
 
     def genop_guard_not_invalidated(self, op):
@@ -1114,8 +1116,8 @@ class AssemblerASMJS(object):
                 guardjs.emit_value(exctyp)
                 guardjs.emit("){\n")
                 guardjs.emit_store(excval, JitFrameAddr_guard_exc(), Int32)
-                guardjs.emit_store(ConstInt(0), pos_exctyp, Int32)
-                guardjs.emit_store(ConstInt(0), pos_excval, Int32)
+                guardjs.emit_store(CONST_ZERO, pos_exctyp, Int32)
+                guardjs.emit_store(CONST_ZERO, pos_excval, Int32)
                 guardjs.emit("}\n")
             # Write the fail_descr into the frame.
             fail_descr = cast_instance_to_gcref(descr)
@@ -1168,8 +1170,8 @@ class AssemblerASMJS(object):
         self.js.emit("){\n")
         # Store the exception on the frame, and clear it.
         self.js.emit_store(excval, JitFrameAddr_guard_exc(), Int32)
-        self.js.emit_store(ConstInt(0), pos_exctyp, Int32)
-        self.js.emit_store(ConstInt(0), pos_excval, Int32)
+        self.js.emit_store(CONST_ZERO, pos_exctyp, Int32)
+        self.js.emit_store(CONST_ZERO, pos_excval, Int32)
         # Store the special propagate-exception descr on the frame.
         descr = cast_instance_to_gcref(self.cpu.propagate_exception_descr)
         self.js.emit_store(ConstPtr(descr), JitFrameAddr_descr(), Int32)
@@ -1309,8 +1311,6 @@ class AssemblerASMJS(object):
         if not array:
             wbfunc = wbdescr.get_write_barrier_fn(self.cpu)
         else:
-            if wbdescr.jit_wb_cards_set == 0:
-                return
             wbfunc = wbdescr.get_write_barrier_from_array_fn(self.cpu)
         if wbfunc == 0:
             return
@@ -1345,12 +1345,15 @@ class AssemblerASMJS(object):
         obj = arguments[0]
         flagaddr = IntBinOp("+", obj, ConstInt(wbdescr.jit_wb_if_flag_byteofs))
         flagbyte = HeapData(Int8, flagaddr)
-        flag_needs_wb = IntBinOp("&", flagbyte,
-                                ConstInt(wbdescr.jit_wb_if_flag_singlebyte))
-        flag_has_cards = ConstInt(0)
+        chk_flag_byte = ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
+        flag_needs_wb = IntBinOp("&", flagbyte, chk_flag_byte)
+        chk_card_byte = CONST_ZERO
+        flag_has_cards = CONST_ZERO
         if card_marking:
-            flag_has_cards = IntBinOp("&", flagbyte,
-                                 ConstInt(wbdescr.jit_wb_cards_set_singlebyte))
+            chk_card_byte = ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
+            flag_has_cards = IntBinOp("&", flagbyte, chk_card_byte)
+            flag_needs_wb = IntBinOp("&", flagbyte,
+                                  IntBinOp("|", chk_flag_byte, chk_card_byte))
         # Check if we actually need a WB at all.
         self.js.emit("if(")
         self.js.emit_value(flag_needs_wb)
@@ -1391,21 +1394,33 @@ class AssemblerASMJS(object):
     def _genop_store_gcmap(self):
         # If there's nothing spilled, no gcmap is needed.
         if self.spilled_frame_offset == 0:
-            self.js.emit_store(ConstInt(0), JitFrameAddr_gcmap(), Int32)
+            self.js.emit_store(CONST_ZERO, JitFrameAddr_gcmap(), Int32)
             return
         # Make a new gcmap sized to match current size of frame.
-        gcmap_size = (self.spilled_frame_offset // WORD // 8) + 1
+        # Remember, our offsets are in bytes but the gcmap indexes whole words.
+        frame_size = self.spilled_frame_offset // WORD
+        gcmap_size = (frame_size // WORD // 8) + 1
         gcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
         gcmap = rffi.cast(lltype.Ptr(jitframe.GCMAP), gcmap)
+        for i in xrange(gcmap_size):
+            gcmap[i] = r_uint(0)
         # Set a bit for every REF that has been spilled.
+        num_refs = 0
         for pos, box in self.spilled_frame_values.iteritems():
             if box and box.type == REF:
+                pos = pos // WORD
                 gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
+                num_refs += 1
+        # Do we actually have any refs?
         # Generate code to store it to the frame, and keep it alive
         # by attaching it to the clt.
-        self.current_clt.compiled_gcmaps.append(gcmap)
-        gcmapref = ConstInt(self.cpu.cast_ptr_to_int(gcmap))
-        self.js.emit_store(gcmapref, JitFrameAddr_gcmap(), Int32)
+        if not num_refs:
+            lltype.free(gcmap, flavor="raw")
+            self.js.emit_store(CONST_ZERO, JitFrameAddr_gcmap(), Int32)
+        else:
+            self.current_clt.compiled_gcmaps.append(gcmap)
+            gcmapref = ConstInt(self.cpu.cast_ptr_to_int(gcmap))
+            self.js.emit_store(gcmapref, JitFrameAddr_gcmap(), Int32)
         # We might have just stored some young pointers into the frame.
         # Emit a write barrier just in case.
         # XXX TODO: x86 backend only does that when reloading after a gc. Why?
@@ -1539,7 +1554,7 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
     def __exit__(self, exc_typ, exc_val, exc_tb):
         # Emit the guard check, testing for whether jf_descr has been set.
         descr = HeapData(Int32, JitFrameAddr_descr())
-        test = IntBinOp("==", descr, ConstInt(0))
+        test = IntBinOp("==", descr, CONST_ZERO)
         self.assembler._genop_guard(test, self.guardop)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
@@ -1592,15 +1607,18 @@ class ctx_allow_gc(ctx_spill_to_frame):
             # NB: this instruction re-evaluates the HeapData expression in rst.
             js.emit_assign_jitframe(HeapData(Int32, rst))
         # Similarly, read potential new addresss of any spilled boxes.
+        # XXX TODO: don't double-load boxes that appear multiple times.
         for pos, box in self.assembler.spilled_frame_values.iteritems():
             if not box or box.type != REF:
+                continue
+            if self.exclude is not None and box in self.exclude:
                 continue
             addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(pos))
             js.emit_load(box, addr, Int32)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
         # XXX TODO x86 backend seems to put a wb here.  Why?
-        #self._genop_write_barrier([JitFrameAddr()])
+        self.assembler._genop_write_barrier([JitFrameAddr()])
 
 
 # Build a dispatch table mapping opnums to the method that emits code for them.
