@@ -54,6 +54,29 @@ def reacquire_gil_shadowstack():
         after()
 
 
+INVALIDATION_COUNTER = lltype.Struct(
+    "INVALIDATIONCOUNTER",
+    ("counter", lltype.Signed)
+)
+
+
+class CompiledLoopTokenASMJS(CompiledLoopToken):
+    """CompiledLoopToken with extra fields for asmjs backend."""
+
+    def __init__(self, cpu, number):
+        CompiledLoopToken.__init__(self, cpu, number)
+        self.all_gcrefs = []
+        self.compiled_function_id = 0
+        self.compiled_guard_funcs = []
+        self.compiled_gcmaps = []
+        self.invalidation = lltype.malloc(INVALIDATION_COUNTER, flavor="raw")
+        self.invalidation.counter = 0
+
+    def __del__(self):
+        CompiledLoopToken.__del__(self)
+        lltype.free(self.invalidation, flavor="raw")
+
+
 class AssemblerASMJS(object):
     """Class for assembling a Trace into a compiled ASMJS function."""
 
@@ -124,20 +147,14 @@ class AssemblerASMJS(object):
         function object.  It attached a "function id" to the CompiledLoopToken
         which can be used to invoke the new function.
         """
-        clt = CompiledLoopToken(self.cpu, looptoken.number)
-        clt.compiled_guard_funcs = []
-        clt.compiled_gcmaps = []
+        clt = CompiledLoopTokenASMJS(self.cpu, looptoken.number)
         looptoken.compiled_loop_token = clt
         self.setup(looptoken)
-        # If the loop refers to any constant REF objects, they will be kept
-        # alive by adding to this list, which is attached to the token.
-        clt.allgcrefs = []
-        operations = self._prepare_loop(inputargs, operations, looptoken,
-                                        clt.allgcrefs)
+        operations = self._prepare_loop(inputargs, operations, looptoken)
         self._assemble(inputargs, operations)
         clt.frame_info = self._allocate_frame_info(self.required_frame_depth)
-        clt._compiled_function_id = self._compile(self.js)
-        self._finalize_pending_target_tokens(clt._compiled_function_id)
+        clt.compiled_function_id = self._compile(self.js)
+        self._finalize_pending_target_tokens(clt.compiled_function_id)
         self.teardown()
 
     def assemble_bridge(self, faildescr, inputargs, operations,
@@ -151,7 +168,7 @@ class AssemblerASMJS(object):
         assert isinstance(faildescr, AbstractFailDescr)
         self.setup(original_loop_token)
         operations = self._prepare_bridge(inputargs, operations,
-                                          self.current_clt.allgcrefs)
+                                          original_loop_token)
         self._assemble(inputargs, operations)
         self._update_frame_info(self.current_clt.frame_info,
                                 self.required_frame_depth)
@@ -165,12 +182,10 @@ class AssemblerASMJS(object):
         for funcid in compiled_loop_token.compiled_guard_funcs:
             support.jitFree(funcid)
         self._free_frame_info(compiled_loop_token.frame_info)
-        support.jitFree(compiled_loop_token._compiled_function_id)
+        support.jitFree(compiled_loop_token.compiled_function_id)
 
     def invalidate_loop(self, looptoken):
-        clt = looptoken.compiled_loop_token
-        for funcid in clt.compiled_guard_funcs:
-            support.jitTriggerGuard(funcid)
+        looptoken.compiled_loop_token.invalidation.counter += 1
 
     def _allocate_frame_info(self, required_depth):
         baseofs = self.cpu.get_baseofs_of_frame_field()
@@ -192,20 +207,21 @@ class AssemblerASMJS(object):
         if self.required_frame_depth < required_depth:
             self.required_frame_depth = required_depth
 
-    def _prepare_loop(self, inputargs, operations, looptoken, allgcrefs):
-        operations = self._prepare(inputargs, operations, allgcrefs)
+    def _prepare_loop(self, inputargs, operations, looptoken):
+        operations = self._prepare(inputargs, operations, looptoken)
         locations = self._get_frame_locations(inputargs)
         # Store the list of locs on the token, so that the calling
         # code knows where to write them to and the GCRewriter can find refs.
         looptoken.compiled_loop_token._ll_initial_locs = locations
         return operations
 
-    def _prepare_bridge(self, inputargs, operations, allgcrefs):
-        operations = self._prepare(inputargs, operations, allgcrefs)
+    def _prepare_bridge(self, inputargs, operations, looptoken):
+        operations = self._prepare(inputargs, operations, looptoken)
         return operations
 
-    def _prepare(self, inputargs, operations, allgcrefs):
+    def _prepare(self, inputargs, operations, looptoken):
         cpu = self.cpu
+        allgcrefs = looptoken.compiled_loop_token.all_gcrefs
         return cpu.gc_ll_descr.rewrite_assembler(cpu, operations, allgcrefs)
 
     def _find_loop_entry_token(self, operations):
@@ -870,7 +886,7 @@ class AssemblerASMJS(object):
             # Use the execute-trampoline helper to execute things to completion.
             # This may produce a new frame object, capture it in a temp box.
             exeaddr = self.execute_trampoline_addr
-            funcid = descr.compiled_loop_token._compiled_function_id
+            funcid = descr.compiled_loop_token.compiled_function_id
             args = [ConstInt(funcid), frame]
             resbox = BoxPtr()
             with ctx_allow_gc(self, exclude=[resbox]):
@@ -1085,15 +1101,16 @@ class AssemblerASMJS(object):
         self._genop_guard(test, op)
 
     def genop_guard_not_invalidated(self, op):
-        # XXX TODO: implement invalidation more efficiently!
-        # At the very least, we can do the check in local memory rather
-        # than via a callback.  Idea: attach an invalidation_counter attr
-        # to the clt, and increment it every time we invalidate.  Have the
-        # guard check for invalidation_counter <= its current value.
-        descr = self._prepare_guard_descr(op)
-        funcid = ConstInt(descr._asmjs_funcid)
-        invalidated = IntCallFunc("jitGuardWasTriggered", "ii", [funcid])
-        test = IntUnaryOp("!", invalidated)
+        self._prepare_guard_descr(op)
+        clt = self.current_clt
+        offset, size = symbolic.get_field_token(INVALIDATION_COUNTER,
+                                                "counter",
+                                                self.cpu.translate_support_code)
+        assert size == Int32.size
+        invalidation = rffi.cast(lltype.Signed, clt.invalidation)
+        cur_val = HeapData(Int32, IntBinOp("+", ConstInt(invalidation), ConstInt(offset)))
+        orig_val = ConstInt(clt.invalidation.counter)
+        test = IntBinOp("==", cur_val, orig_val)
         self._genop_guard(test, op)
 
     def _prepare_guard_descr(self, op):

@@ -43,7 +43,6 @@ def jsexternal(args, result):
 
 
 _jitCompiledFunctions = {0: None}
-_jitTriggeredGuards = {}
 
 
 @jsexternal([rffi.CCHARP], rffi.INT)
@@ -92,16 +91,6 @@ def jitFree(funcid):
     while len(_jitCompiledFunctions) == funcid + 1:
         del _jitCompiledFunctions[funcid]
         funcid -= 1
-
-
-@jsexternal([rffi.INT], lltype.Void)
-def jitTriggerGuard(guardid):
-    _jitTriggeredGuards[guardid] = True
-
-
-@jsexternal([rffi.INT], rffi.INT)
-def jitGuardWasTriggered(guardid):
-    return _jitTriggeredGuards.get(guardid, False)
 
 
 # Here we have a simple and slow asmjs-to-python converter.
