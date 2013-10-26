@@ -29,6 +29,7 @@ from rpython.jit.backend.asmjs.jsbuilder import (ASMJSBuilder, IntBinOp,
                                                  IntCast, IntCallFunc,
                                                  JitFrameAddr,
                                                  JitFrameAddr_base,
+                                                 JitFrameAddr_slot,
                                                  JitFrameAddr_gcmap,
                                                  JitFrameAddr_guard_exc,
                                                  JitFrameAddr_force_descr,
@@ -329,7 +330,7 @@ class AssemblerASMJS(object):
             if not box:
                 continue
             offset = locations[i]
-            addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(offset))
+            addr = JitFrameAddr_slot(offset)
             typ = HeapType.from_box(box)
             self.js.emit_load(box, addr, typ)
         return locations
@@ -393,6 +394,9 @@ class AssemblerASMJS(object):
         integer "function id" that can be used to invoke the code.
         """
         jssrc = js.finish()
+        print "-=-=-=-= COMPILING ASMJS =-=-=-=-"
+        print jssrc
+        print "-=-=-=-=-=-=-=-=-"
         assert not self.has_unimplemented_ops
         funcid = support.jitCompile(jssrc)
         return funcid
@@ -596,8 +600,12 @@ class AssemblerASMJS(object):
         itemsize, offset, signed = unpack_arraydescr(op.getdescr())
         base = op.getarg(0)
         which = op.getarg(1)
-        addr = IntBinOp("+", base, ConstInt(offset))
-        addr = IntBinOp("+", addr, IntScaleOp(which, itemsize))
+        if isinstance(which, ConstInt):
+            itemoffset = offset + (which.getint() * itemsize)
+            addr = IntBinOp("+", base, ConstInt(itemoffset))
+        else:
+            addr = IntBinOp("+", base, ConstInt(offset))
+            addr = IntBinOp("+", addr, IntScaleOp(which, itemsize))
         typ = HeapType.from_size_and_sign(itemsize, signed)
         self.js.emit_load(op.result, addr, typ)
 
@@ -611,8 +619,12 @@ class AssemblerASMJS(object):
         base = op.getarg(0)
         where = op.getarg(1)
         value = op.getarg(2)
-        addr = IntBinOp("+", base, ConstInt(offset))
-        addr = IntBinOp("+", addr, IntScaleOp(where, itemsize))
+        if isinstance(where, ConstInt):
+            itemoffset = offset + (where.getint() * itemsize)
+            addr = IntBinOp("+", base, ConstInt(itemoffset))
+        else:
+            addr = IntBinOp("+", base, ConstInt(offset))
+            addr = IntBinOp("+", addr, IntScaleOp(where, itemsize))
         typ = HeapType.from_size_and_sign(itemsize, signed)
         self.js.emit_store(value, addr, typ)
 
@@ -1362,16 +1374,20 @@ class AssemblerASMJS(object):
         obj = arguments[0]
         flagaddr = IntBinOp("+", obj, ConstInt(wbdescr.jit_wb_if_flag_byteofs))
         flagbyte = HeapData(Int8, flagaddr)
+        flagbytebox = BoxInt()
         chk_flag_byte = ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
-        flag_needs_wb = IntBinOp("&", flagbyte, chk_flag_byte)
+        flag_needs_wb = IntBinOp("&", flagbytebox, chk_flag_byte)
         chk_card_byte = CONST_ZERO
         flag_has_cards = CONST_ZERO
         if card_marking:
             chk_card_byte = ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
-            flag_has_cards = IntBinOp("&", flagbyte, chk_card_byte)
-            flag_needs_wb = IntBinOp("&", flagbyte,
-                                  IntBinOp("|", chk_flag_byte, chk_card_byte))
+            # XXX TODO: this byte is -128, not sure that works for "&"
+            flag_has_cards = IntBinOp("&", flagbytebox, chk_card_byte)
+            # XXX TODO: need to include both of these in the check?
+            #flag_needs_wb = IntBinOp("&", flagbyte,
+            #                      IntBinOp("|", chk_flag_byte, chk_card_byte))
         # Check if we actually need a WB at all.
+        self.js.emit_assignment(flagbytebox, flagbyte)
         self.js.emit("if(")
         self.js.emit_value(flag_needs_wb)
         self.js.emit("){\n")
@@ -1387,6 +1403,7 @@ class AssemblerASMJS(object):
             # Closes check of !flag_has_cards
             self.js.emit("}\n")
             # If we are now using card-marking, actually do the marking.
+            self.js.emit_assignment(flagbytebox, flagbyte)
             self.js.emit("if(")
             self.js.emit_value(flag_has_cards)
             self.js.emit("){\n")
@@ -1438,10 +1455,10 @@ class AssemblerASMJS(object):
             self.current_clt.compiled_gcmaps.append(gcmap)
             gcmapref = ConstInt(self.cpu.cast_ptr_to_int(gcmap))
             self.js.emit_store(gcmapref, JitFrameAddr_gcmap(), Int32)
-        # We might have just stored some young pointers into the frame.
-        # Emit a write barrier just in case.
-        # XXX TODO: x86 backend only does that when reloading after a gc. Why?
-        self._genop_write_barrier([JitFrameAddr()])
+            # We might have just stored some young pointers into the frame.
+            # Emit a write barrier just in case.
+            # XXX TODO: x86 backend only does that when reloading after a gc.
+            self._genop_write_barrier([JitFrameAddr()])
 
     def genop_debug_merge_point(self, op):
         pass
@@ -1529,7 +1546,7 @@ class ctx_spill_to_frame(object):
         if offset >= self.assembler.spilled_frame_offset:
             self.assembler.spilled_frame_offset = offset + typ.size
         # Generate code to write the value into the frame.
-        addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(offset))
+        addr = JitFrameAddr_slot(offset)
         self.assembler.js.emit_store(box, addr, typ)
         # Record where we spilled it.
         if box not in self.assembler.spilled_frame_locations:
@@ -1630,7 +1647,7 @@ class ctx_allow_gc(ctx_spill_to_frame):
                 continue
             if self.exclude is not None and box in self.exclude:
                 continue
-            addr = IntBinOp("+", JitFrameAddr_base(), ConstInt(pos))
+            addr = JitFrameAddr_slot(pos)
             js.emit_load(box, addr, Int32)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)

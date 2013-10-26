@@ -154,6 +154,18 @@ class JitFrameAddr_base(ASMJSValue):
         jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
 
 
+class JitFrameAddr_slot(ASMJSValue):
+    type = REF
+
+    def __init__(self, offset):
+        self.offset = offset
+
+    def emit_value(self, jsbuilder):
+        baseoffset = jsbuilder.cpu.get_baseofs_of_frame_field()
+        offset = baseoffset + self.offset
+        jsbuilder.emit("(((jitframe|0) + (%d|0))|0)" % (offset,))
+
+
 class JitFrameAddr_descr(ASMJSValue):
     """ASMJSValue representing the address of jitframe.jf_descr
 
@@ -236,8 +248,10 @@ class HeapData(ASMJSValue):
         jsbuilder.emit(self.heaptype.heap_name)
         jsbuilder.emit("[(")
         jsbuilder.emit_value(self.addr)
-        jsbuilder.emit(") >> ")
-        jsbuilder.emit(str(self.heaptype.shift))
+        jsbuilder.emit(")")
+        if self.heaptype.shift:
+            jsbuilder.emit(" >> ")
+            jsbuilder.emit(str(self.heaptype.shift))
         jsbuilder.emit("]")
         if self.type != INT:
             jsbuilder.emit("|0")
@@ -789,8 +803,10 @@ class ASMJSBuilder(object):
         self.emit(typ.heap_name)
         self.emit("[(")
         self.emit_value(addr)
-        self.emit(") >> ")
-        self.emit(str(typ.shift))
+        self.emit(")")
+        if typ.shift:
+            self.emit(" >> ")
+            self.emit(str(typ.shift))
         self.emit("]")
         if typ.lltype == INT:
             self.emit("|0")
@@ -822,8 +838,10 @@ class ASMJSBuilder(object):
         self.emit(typ.heap_name)
         self.emit("[(")
         self.emit_value(addr)
-        self.emit(") >> ")
-        self.emit(str(typ.shift))
+        self.emit(")")
+        if typ.shift:
+            self.emit(" >> ")
+            self.emit(str(typ.shift))
         self.emit("]=")
         self.emit_value(value)
         self.emit(";\n")

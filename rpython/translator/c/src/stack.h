@@ -29,7 +29,7 @@ void LL_stack_set_length_fraction(double);
 
 
 #ifdef __GNUC__
-#  define PYPY_INHIBIT_TAIL_CALL()   asm("/* inhibit_tail_call */")
+#  define PYPY_INHIBIT_TAIL_CALL()   /* disabled this for asmjs support */
 #else
 #  define PYPY_INHIBIT_TAIL_CALL()   /* add hints for other compilers here */
 #endif
