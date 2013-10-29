@@ -138,8 +138,12 @@ def parse_asmjs(jssource):
     return _parse_asmjs(jssource)
 
 
+counter = 0
 def validate_asmjs(jssource):
-    tf = tempfile.NamedTemporaryFile()
+    #tf = tempfile.NamedTemporaryFile()
+    global counter
+    tf = open("/tmp/jit.asm.%d.js" % (counter,), "w")
+    counter += 1
     tf.write("var test = " + jssource)
     tf.flush()
     p = subprocess.Popen(["js", tf.name],
@@ -784,3 +788,7 @@ dotted_name: IDENTIFIER (["."] IDENTIFIER)+;
 callargs: [""] | expr ([","] expr)*;
 
 """
+
+if __name__ == "__main__":
+    import sys
+    parse_asmjs(open(sys.argv[1], "r").read())
