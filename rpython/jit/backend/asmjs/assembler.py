@@ -1405,6 +1405,11 @@ class AssemblerASMJS(object):
         wbdescr = self.cpu.gc_ll_descr.write_barrier_descr
         if not wbdescr:
             return
+        card_marking = False
+        if array and wbdescr.jit_wb_cards_set != 0:
+            assert (wbdescr.jit_wb_cards_set_byteofs ==
+                    wbdescr.jit_wb_if_flag_byteofs)
+            card_marking = True
         if not array:
             wbfunc = wbdescr.get_write_barrier_fn(self.cpu)
         else:
@@ -1423,54 +1428,36 @@ class AssemblerASMJS(object):
         # And like this for arrays with potential card-marking:
         #
         #    if (obj has JIT_WB_IF_FLAG) {
-        #      if (obj doesn't have JIT_WB_CARDS_SET) {
+        #      if (! obj has JIT_WB_CARDS_SET) {
         #        dynCall(write_barrier, obj)
-        #        // this might have set JIT_WB_CARDS_SET flag
         #      }
-        #      if (obj has JIT_WB_CARDS_SET) {
-        #        do the card marking
-        #      }
+        #    }
+        #    if (obj has JIT_WB_CARDS_SET) {
+        #      do the card marking
         #    }
         #
         # XXX TODO: would this be neater if split into separate functions?
         #
-        card_marking = False
-        if array and wbdescr.jit_wb_cards_set != 0:
-            assert (wbdescr.jit_wb_cards_set_byteofs ==
-                    wbdescr.jit_wb_if_flag_byteofs)
-            card_marking = True
         obj = self._get_jsval(arguments[0])
         flagaddr = js.Plus(obj, js.ConstInt(wbdescr.jit_wb_if_flag_byteofs))
         flagbyte = js.HeapData(js.Int8, flagaddr)
         flagbytevar = self.bldr.allocate_intvar()
         chk_flag_byte = js.ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
         flag_needs_wb = js.And(flagbytevar, chk_flag_byte)
-        chk_card_byte = js.zero
-        flag_has_cards = js.zero
-        if card_marking:
-            chk_card_byte = js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
-            # XXX TODO: this byte is -128, not sure that works for "&"
-            flag_has_cards = js.And(flagbytevar, chk_card_byte)
-            # XXX TODO: need to include both of these in the check?
-            flag_needs_wb = js.And(flagbyte,
-                                   js.Or(chk_flag_byte, chk_card_byte))
-        # Check if we actually need a WB at all.
+        chk_card_byte = js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
+        flag_has_cards = js.And(flagbytevar, chk_card_byte)
+        # Check if we actually need to establish a writebarrier.
         self.bldr.emit_assignment(flagbytevar, flagbyte)
-        with self.bldr.emit_if_block(flag_needs_wb):
-            # XXX TODO: that it's akward to use a context-manager here,
-            # is a good sign that this method should be split in two.
-            ctx_card_marking = None
-            if card_marking:
-                not_flag_has_cards = js.UNot(flag_has_cards)
-                ctx_card_marking = self.bldr.emit_if_block(not_flag_has_cards)
-                ctx_card_marking.__enter__()
-            # Call the selected write-barrier helper.
-            # For arrays, this might set the has-cards flag.
-            self.bldr.emit_expr(js.DynCallFunc("vi", js.ConstInt(wbfunc), [obj]))
-            if ctx_card_marking is not None:
-                ctx_card_marking.__exit__(None, None, None)
-                # If we are now using card-marking, actually do the marking.
-                self.bldr.emit_assignment(flagbytevar, flagbyte)
+        with self.bldr.emit_if_block(js.Or(flag_needs_wb, flag_has_cards)):
+            call = js.DynCallFunc("vi", js.ConstInt(wbfunc), [obj])
+            if not card_marking:
+                self.bldr.emit_expr(call)
+            else:
+                with self.bldr.emit_if_block(js.UNot(flag_has_cards)):
+                    # This might change the GC flags on the object.
+                    self.bldr.emit_expr(call)
+                    self.bldr.emit_assignment(flagbytevar, flagbyte)
+                # Check if we need to set a card-marking flag.
                 with self.bldr.emit_if_block(flag_has_cards):
                     # This is how we decode the array index into a card
                     # bit to set.  Logic cargo-culted from x86 backend.
@@ -1485,6 +1472,7 @@ class AssemblerASMJS(object):
                     old_byte_data = js.HeapData(js.Int8, byte_addr)
                     new_byte_data = js.Or(old_byte_data, byte_mask)
                     self.bldr.emit_store(new_byte_data, byte_addr, js.Int8)
+        self.bldr.free_intvar(flagbytevar)
 
     def _genop_store_gcmap(self):
         # If there's nothing spilled, no gcmap is needed.
