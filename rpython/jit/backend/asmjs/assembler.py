@@ -768,11 +768,11 @@ class AssemblerASMJS(object):
             # If the res makes it back to dbl unchanged, there was no overflow.
             self._prepare_guard_descr(guardop)
             if guardop.getopnum() == rop.GUARD_NO_OVERFLOW:
-                test = js.Equal(dblresvar, js.DoubleCast(resvar))
+                test = js.NotEqual(dblresvar, js.DoubleCast(resvar))
             else:
                 assert guardop.getopnum() == rop.GUARD_OVERFLOW
-                test = js.NotEqual(dblresvar, js.DoubleCast(resvar))
-            self._genop_guard(test, guardop)
+                test = js.Equal(dblresvar, js.DoubleCast(resvar))
+            self._genop_guard_failure(test, guardop)
             # Discard temporary box.
             self.bldr.free_doublevar(dblresvar)
         return genop_withguard_int_binop_ovf
@@ -785,8 +785,11 @@ class AssemblerASMJS(object):
                                                                  js.IMul)
 
     def genop_int_force_ge_zero(self, op):
-        arg = self._get_jsval(op.getarg(0))
-        # XXX TODO: "arg" might be an expression; dont re-evaluate it.
+        argbox = op.getarg(0)
+        arg = self._get_jsval(argbox)
+        if isinstance(argbox, Box):
+            if not isinstance(arg, js.Variable):
+                arg = self._genop_realize_box(argbox)
         resvar = self._get_jsval(op.result)
         with self.bldr.emit_if_block(js.LessThan(arg, js.zero)):
             self.bldr.emit_assignment(resvar, js.zero)
@@ -812,8 +815,11 @@ class AssemblerASMJS(object):
     genop_expr_float_neg = _genop_expr_float_unaryop(js.UMinus)
 
     def genop_float_abs(self, op):
-        # XXX TODO: arg might be an expression; don't re-evaluate it.
-        arg = self._get_jsval(op.getarg(0))
+        argbox = op.getarg(0)
+        arg = self._get_jsval(argbox)
+        if isinstance(argbox, Box):
+            if not isinstance(arg, js.Variable):
+                arg = self._genop_realize_box(argbox)
         resvar = self._get_jsval(op.result)
         zero = js.ConstFloat(longlong.getfloatstorage(0.0))
         with self.bldr.emit_if_block(js.LessThan(arg, zero)):
@@ -1098,38 +1104,38 @@ class AssemblerASMJS(object):
 
     def genop_guard_true(self, op):
         self._prepare_guard_descr(op)
-        test = self._get_jsval(op.getarg(0))
-        self._genop_guard(test, op)
+        test = js.UNot(self._get_jsval(op.getarg(0)))
+        self._genop_guard_failure(test, op)
 
     def genop_guard_isnull(self, op):
         self._prepare_guard_descr(op)
-        test = js.Equal(self._get_jsval(op.getarg(0)), js.zero)
-        self._genop_guard(test, op)
+        test = js.NotEqual(self._get_jsval(op.getarg(0)), js.zero)
+        self._genop_guard_failure(test, op)
 
     def genop_guard_nonnull(self, op):
         self._prepare_guard_descr(op)
-        test = self._get_jsval(op.getarg(0))
-        self._genop_guard(test, op)
+        test = js.UNot(self._get_jsval(op.getarg(0)))
+        self._genop_guard_failure(test, op)
 
     def genop_guard_false(self, op):
         self._prepare_guard_descr(op)
-        test = js.UNot(self._get_jsval(op.getarg(0)))
-        self._genop_guard(test, op)
+        test = self._get_jsval(op.getarg(0))
+        self._genop_guard_failure(test, op)
 
     def genop_guard_value(self, op):
         self._prepare_guard_descr(op)
-        test = js.Equal(self._get_jsval(op.getarg(0)),
-                        self._get_jsval(op.getarg(1)))
-        self._genop_guard(test, op)
+        test = js.NotEqual(self._get_jsval(op.getarg(0)),
+                           self._get_jsval(op.getarg(1)))
+        self._genop_guard_failure(test, op)
 
     def genop_guard_class(self, op):
         self._prepare_guard_descr(op)
         objptr = self._get_jsval(op.getarg(0))
         clsptr = self._get_jsval(op.getarg(1))
-        test = self._genop_expr_has_class(objptr, clsptr)
-        self._genop_guard(test, op)
+        test = self._genop_expr_not_has_class(objptr, clsptr)
+        self._genop_guard_failure(test, op)
 
-    def _genop_expr_has_class(self, objptr, clsptr):
+    def _genop_expr_not_has_class(self, objptr, clsptr):
         # If compiled without type pointers, we have to read the "typeid"
         # from the first half-word of the object and compare it to the
         # expected typeid for the class.
@@ -1137,10 +1143,10 @@ class AssemblerASMJS(object):
         if offset is not None:
             objcls = js.HeapData(js.Int32, js.Plus(objptr,
                                                    js.ConstInt(offset)))
-            test = js.Equal(objcls, clsptr)
+            test = js.NotEqual(objcls, clsptr)
         else:
             typeid = js.And(js.HeapData(js.Int32, objptr), js.ConstInt(0xFFFF))
-            test = js.Equal(typeid, js.ClassPtrTypeID(clsptr))
+            test = js.NotEqual(typeid, js.ClassPtrTypeID(clsptr))
         return test
 
     def genop_guard_nonnull_class(self, op):
@@ -1154,9 +1160,11 @@ class AssemblerASMJS(object):
         testvar = self.bldr.allocate_intvar()
         self.bldr.emit_assignment(testvar, objptr)
         with self.bldr.emit_if_block(testvar):
-            has_class = self._genop_expr_has_class(objptr, clsptr)
-            self.bldr.emit_assignment(testvar, has_class)
-        self._genop_guard(testvar, op)
+            not_has_class = self._genop_expr_not_has_class(objptr, clsptr)
+            self.bldr.emit_assignment(testvar, not_has_class)
+        with self.bldr.emit_else_block():
+            self.bldr.emit_assignment(testvar, js.UNot(testvar))
+        self._genop_guard_failure(testvar, op)
         self.bldr.free_intvar(testvar)
 
     def genop_guard_exception(self, op):
@@ -1165,12 +1173,9 @@ class AssemblerASMJS(object):
         pos_excval = js.ConstInt(self.cpu.pos_exc_value())
         exctyp = js.HeapData(js.Int32, pos_exctyp)
         excval = js.HeapData(js.Int32, pos_excval)
-        test = js.Equal(exctyp, self._get_jsval(op.getarg(0)))
-        self._genop_guard(test, op)
-        if op.result is None:
-            # XXX TODO: is it necessary to store it to the frame?
-            self.bldr.emit_store(excval, js.JitFrameGuardExcAddr(), js.Int32)
-        else:
+        test = js.NotEqual(exctyp, self._get_jsval(op.getarg(0)))
+        self._genop_guard_failure(test, op)
+        if op.result is not None:
             self.bldr.emit_assignment(self._get_jsval(op.result), excval)
         self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
         self.bldr.emit_store(js.zero, pos_excval, js.Int32)
@@ -1179,8 +1184,8 @@ class AssemblerASMJS(object):
         self._prepare_guard_descr(op)
         pos_exctyp = js.ConstInt(self.cpu.pos_exception())
         exctyp = js.HeapData(js.Int32, pos_exctyp)
-        test = js.Equal(exctyp, js.zero)
-        self._genop_guard(test, op)
+        test = js.NotEqual(exctyp, js.zero)
+        self._genop_guard_failure(test, op)
 
     def genop_guard_not_invalidated(self, op):
         self._prepare_guard_descr(op)
@@ -1194,8 +1199,8 @@ class AssemblerASMJS(object):
         cur_val = js.HeapData(js.Int32, js.Plus(js.ConstInt(invalidation),
                                                 js.ConstInt(offset)))
         orig_val = js.ConstInt(clt.invalidation.counter)
-        test = js.Equal(cur_val, orig_val)
-        self._genop_guard(test, op)
+        test = js.NotEqual(cur_val, orig_val)
+        self._genop_guard_failure(test, op)
 
     def _prepare_guard_descr(self, op):
         descr = op.getdescr()
@@ -1230,12 +1235,11 @@ class AssemblerASMJS(object):
         self.current_clt.compiled_guard_funcs.append(descr._asmjs_funcid)
         return descr
 
-    def _genop_guard(self, test, op):
+    def _genop_guard_failure(self, test, op):
         descr = op.getdescr()
         assert isinstance(descr, AbstractFailDescr)
         assert descr._asmjs_funcid
-        # Check guard expression, execute guard function if it's false.
-        with self.bldr.emit_if_block(js.UNot(test)):
+        with self.bldr.emit_if_block(test):
             # Write the failargs into the frame.
             # This is the only mechanism we have available for arg passing.
             locations = self._genop_write_output_args(op.getfailargs())
@@ -1290,8 +1294,10 @@ class AssemblerASMJS(object):
 
     def _genop_malloc_nursery(self, op, sizebox):
         gc_ll_descr = self.cpu.gc_ll_descr
-        # XXX TODO: ensure that this is in a variable.
         sizevar = self._get_jsval(sizebox)
+        if isinstance(sizebox, Box):
+            if not isinstance(sizevar, js.Variable):
+                sizevar = self._genop_realize_box(sizebox)
         # This is essentially an in-lining of MiniMark.malloc_fixedsize_clear()
         nfree_addr = js.ConstInt(gc_ll_descr.get_nursery_free_addr())
         ntop_addr = js.ConstInt(gc_ll_descr.get_nursery_top_addr())
@@ -1648,8 +1654,8 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
     def __exit__(self, exc_typ, exc_val, exc_tb):
         # Emit the guard check, testing for whether jf_descr has been set.
         descr = js.HeapData(js.Int32, js.JitFrameDescrAddr())
-        test = js.Equal(descr, js.zero)
-        self.assembler._genop_guard(test, self.guardop)
+        test = js.NotEqual(descr, js.zero)
+        self.assembler._genop_guard_failure(test, self.guardop)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
 

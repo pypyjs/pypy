@@ -1,4 +1,5 @@
 
+from rpython.rlib.rarithmetic import intmask
 from rpython.memory.gctypelayout import GCData
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
@@ -348,16 +349,6 @@ class Plus(ASMJSBinaryOp):
                 rhs = DoubleCast(lhs)
         ASMJSBinaryOp.__init__(self, lhs, rhs)
 
-    def emit_value(self, js):
-        if isinstance(self.lhs, ConstInt) and isinstance(self.rhs, ConstInt):
-            # XXX TODO: overflow
-            js.emit_value(ConstInt(_getint(self.lhs) + _getint(self.rhs)))
-        elif isinstance(self.lhs, ConstPtr) and isinstance(self.rhs, ConstInt):
-            # XXX TODO: overflow
-            js.emit_value(ConstInt(_getint(self.lhs) + _getint(self.rhs)))
-        else:
-            ASMJSBinaryOp.emit_value(self, js)
-
 
 class Minus(ASMJSBinaryOp):
     """ASMJSBinaryOp representing subtraction."""
@@ -377,13 +368,6 @@ class Minus(ASMJSBinaryOp):
             if not istype(rhs, Doublish):
                 rhs = DoubleCast(rhs)
         ASMJSBinaryOp.__init__(self, lhs, rhs)
-
-    def emit_value(self, js):
-        if isinstance(self.lhs, ConstInt) and isinstance(self.rhs, ConstInt):
-            # XXX TODO: overflow
-            js.emit_value(ConstInt(_getint(self.lhs) - _getint(self.rhs)))
-        else:
-            ASMJSBinaryOp.emit_value(self, js)
 
 
 class Mul(ASMJSBinaryOp):
@@ -418,14 +402,10 @@ class IMul(ASMJSBinaryOp):
 
     def emit_value(self, js):
         if isinstance(self.rhs, ConstInt):
-            if isinstance(self.lhs, ConstInt):
-                # XXX TODO: overflow
-                js.emit_value(ConstInt(_getint(self.lhs) * _getint(self.rhs)))
-            else:
-                js.emit("(")
-                js.emit_value(self.lhs)
-                js.emit(")*")
-                js.emit_value(self.rhs)
+            js.emit("(")
+            js.emit_value(self.lhs)
+            js.emit(")*")
+            js.emit_value(self.rhs)
         else:
             js.emit("imul(")
             js.emit_value(self.lhs)
@@ -434,7 +414,7 @@ class IMul(ASMJSBinaryOp):
             js.emit(")|0")
 
 
-class _Div(ASMJSBinaryOp):
+class _Divish(ASMJSBinaryOp):
     """ASMJSBinaryOp representing division or modulus."""
 
     def __init__(self, lhs, rhs):
@@ -459,12 +439,12 @@ class _Div(ASMJSBinaryOp):
         ASMJSBinaryOp.__init__(self, lhs, rhs)
 
 
-class Div(_Div):
+class Div(_Divish):
     """ASMJSBinaryOp representing division."""
     operator = "/"
 
 
-class Mod(_Div):
+class Mod(_Divish):
     """ASMJSBinaryOp representing modulus."""
     operator = "%"
 
@@ -491,28 +471,12 @@ class Xor(_Bitwise):
 
 class LShift(_Bitwise):
     """ASMJSBinaryOp representing bitwise-left-shift."""
-
     operator = "<<"
-
-    def emit_value(self, js):
-        if isinstance(self.lhs, ConstInt) and isinstance(self.rhs, ConstInt):
-            # XXX TODO: overflow
-            js.emit_value(ConstInt(_getint(self.lhs) << _getint(self.rhs)))
-        else:
-            _Bitwise.emit_value(self, js)
 
 
 class RShift(_Bitwise):
     """ASMJSBinaryOp representing bitwise-right-shift."""
-
     operator = ">>"
-
-    def emit_value(self, js):
-        if isinstance(self.lhs, ConstInt) and isinstance(self.rhs, ConstInt):
-            # XXX TODO: overflow
-            js.emit_value(ConstInt(_getint(self.lhs) >> _getint(self.rhs)))
-        else:
-            _Bitwise.emit_value(self, js)
 
 
 class URShift(_Bitwise):
@@ -723,3 +687,27 @@ def ClassPtrTypeID(classptr):
     typeid = RShift(typeid, ConstInt(2))
     typeid = And(typeid, ConstInt(0xFFFF))
     return typeid
+
+
+# Turn binary operators into constant-folding factory functions.
+# This is a simple way to reduce code duplication and to let us
+# easily switch this behaviour on or off.
+
+for nm in globals().keys():
+    binop = globals()[nm]
+    if not isinstance(binop, type)or not issubclass(binop, ASMJSBinaryOp):
+        continue
+    if not binop.operator or nm.startswith("_") or nm == "URShift":
+        continue
+    binopnm = "_" + nm
+    assert binopnm not in globals()
+    globals()[binopnm] = binop
+    wrapper_defn = """
+def %s(lhs, rhs):
+    if isinstance(lhs, ConstInt) or isinstance(lhs, ConstPtr):
+        if isinstance(rhs, ConstInt) or isinstance(rhs, ConstPtr):
+            return ConstInt(intmask(_getint(lhs) %s _getint(rhs)))
+    return %s(lhs, rhs)
+    """ % (nm, binop.operator, binopnm)
+    exec wrapper_defn in globals()
+    del wrapper_defn
