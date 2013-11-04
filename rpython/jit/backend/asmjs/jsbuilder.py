@@ -74,7 +74,7 @@ class ASMJSBuilder(object):
     def _build_prelude(self):
         chunks = []
         # Standard asmjs prelude stuff.
-        chunks.append('function(stdlib, foreign, heap){\n')
+        chunks.append('function rpyjit(stdlib, foreign, heap){\n')
         chunks.append('"use asm";\n')
         chunks.append('var HI8 = new stdlib.Int8Array(heap);\n')
         chunks.append('var HI16 = new stdlib.Int16Array(heap);\n')
@@ -96,6 +96,7 @@ class ASMJSBuilder(object):
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
+            assert "." in ("%f" % (init_double,))
             chunks.append("var %s=%f;\n" % (varname, init_double))
         chunks.append("if((goto|0) <= (0|0)){\n")
         return chunks
@@ -141,7 +142,7 @@ class ASMJSBuilder(object):
             varname = self.free_doublevars.pop()
         else:
             varname = "f%d" % (len(self.all_doublevars),)
-            self.all_doublevars[varname] = 0
+            self.all_doublevars[varname] = 0.0
         return jsval.DoubleVar(varname)
 
     def free_intvar(self, var):
@@ -222,6 +223,7 @@ class ASMJSBuilder(object):
             refval = (rffi.cast(lltype.Signed, val.getref_base()))
             self.emit(str(refval))
         elif isinstance(val, ConstFloat):
+            assert "." in str(val.getfloat())
             self.emit(str(val.getfloat()))
         else:
             raise RuntimeError("Unknown js value type: %s" % (val,))
