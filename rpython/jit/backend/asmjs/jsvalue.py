@@ -1,4 +1,6 @@
 
+import textwrap
+
 from rpython.rlib.rarithmetic import intmask
 from rpython.memory.gctypelayout import GCData
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
@@ -695,19 +697,19 @@ def ClassPtrTypeID(classptr):
 
 for nm in globals().keys():
     binop = globals()[nm]
-    if not isinstance(binop, type)or not issubclass(binop, ASMJSBinaryOp):
+    if not isinstance(binop, type) or not issubclass(binop, ASMJSBinaryOp):
         continue
     if not binop.operator or nm.startswith("_") or nm == "URShift":
         continue
     binopnm = "_" + nm
     assert binopnm not in globals()
     globals()[binopnm] = binop
-    wrapper_defn = """
-def %s(lhs, rhs):
-    if isinstance(lhs, ConstInt) or isinstance(lhs, ConstPtr):
-        if isinstance(rhs, ConstInt) or isinstance(rhs, ConstPtr):
-            return ConstInt(intmask(_getint(lhs) %s _getint(rhs)))
-    return %s(lhs, rhs)
-    """ % (nm, binop.operator, binopnm)
+    wrapper_defn = textwrap.dedent("""
+        def %s(lhs, rhs):
+            if isinstance(lhs, ConstInt) or isinstance(lhs, ConstPtr):
+                if isinstance(rhs, ConstInt) or isinstance(rhs, ConstPtr):
+                    return ConstInt(intmask(_getint(lhs) %s _getint(rhs)))
+            return %s(lhs, rhs)
+    """) % (nm, binop.operator, binopnm)
     exec wrapper_defn in globals()
     del wrapper_defn

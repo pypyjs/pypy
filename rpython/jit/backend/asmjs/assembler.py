@@ -1,4 +1,5 @@
 
+import os
 import sys
 
 from rpython.rlib import rgc
@@ -446,9 +447,9 @@ class AssemblerASMJS(object):
         integer "function id" that can be used to invoke the code.
         """
         jssrc = js.finish()
-        print "-=-=-=-= COMPILING ASMJS =-=-=-=-"
-        print jssrc
-        print "-=-=-=-=-=-=-=-=-"
+        os.write(2, "-=-=-=-= COMPILING ASMJS =-=-=-=-\n")
+        os.write(2, jssrc)
+        os.write(2, "\n-=-=-=-=-=-=-=-=-\n")
         assert not self.has_unimplemented_ops
         funcid = support.jitCompile(jssrc)
         return funcid
@@ -461,6 +462,9 @@ class AssemblerASMJS(object):
         any existing function associated with the given function id.
         """
         jssrc = js.finish()
+        os.write(2, "-=-=-=-= RECOMPILING ASMJS =-=-=-=-\n")
+        os.write(2, jssrc)
+        os.write(2, "\n-=-=-=-=-=-=-=-=-\n")
         assert not self.has_unimplemented_ops
         support.jitRecompile(function_id, jssrc)
 
@@ -1433,13 +1437,13 @@ class AssemblerASMJS(object):
         #
         # And like this for arrays with potential card-marking:
         #
-        #    if (obj has JIT_WB_IF_FLAG) {
-        #      if (! obj has JIT_WB_CARDS_SET) {
+        #    if (obj has JIT_WB_IF_FLAG|JIT_WB_CARDS_SET) {
+        #      if (not obj has JIT_WB_CARDS_SET) {
         #        dynCall(write_barrier, obj)
         #      }
-        #    }
-        #    if (obj has JIT_WB_CARDS_SET) {
-        #      do the card marking
+        #      if (obj has JIT_WB_CARDS_SET) {
+        #        do the card marking
+        #      }
         #    }
         #
         # XXX TODO: would this be neater if split into separate functions?
@@ -1448,13 +1452,16 @@ class AssemblerASMJS(object):
         flagaddr = js.Plus(obj, js.ConstInt(wbdescr.jit_wb_if_flag_byteofs))
         flagbyte = js.HeapData(js.Int8, flagaddr)
         flagbytevar = self.bldr.allocate_intvar()
-        chk_flag_byte = js.ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
-        flag_needs_wb = js.And(flagbytevar, chk_flag_byte)
-        chk_card_byte = js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
-        flag_has_cards = js.And(flagbytevar, chk_card_byte)
+        chk_flag = js.ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
+        chk_card = js.zero
+        flag_has_cards = js.zero
+        if card_marking:
+            chk_card = js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
+            flag_has_cards = js.And(flagbytevar, chk_card)
+        flag_needs_wb = js.And(flagbytevar, js.Or(chk_flag, chk_card))
         # Check if we actually need to establish a writebarrier.
         self.bldr.emit_assignment(flagbytevar, flagbyte)
-        with self.bldr.emit_if_block(js.Or(flag_needs_wb, flag_has_cards)):
+        with self.bldr.emit_if_block(flag_needs_wb):
             call = js.DynCallFunc("vi", js.ConstInt(wbfunc), [obj])
             if not card_marking:
                 self.bldr.emit_expr(call)
@@ -1468,13 +1475,12 @@ class AssemblerASMJS(object):
                     # This is how we decode the array index into a card
                     # bit to set.  Logic cargo-culted from x86 backend.
                     which = self._get_jsval(arguments[1])
-                    card_page_shift = js.ConstInt(wbdescr.jit_wb_card_page_shift)
-                    byte_index = js.RShift(which, card_page_shift)
-                    byte_ofs = js.RShift(byte_index, js.ConstInt(3))
+                    card_shift = js.ConstInt(wbdescr.jit_wb_card_page_shift)
+                    byte_index = js.RShift(which, card_shift)
+                    byte_ofs = js.UNeg(js.RShift(byte_index, js.ConstInt(3)))
                     byte_mask = js.LShift(js.ConstInt(1),
                                           js.And(byte_index, js.ConstInt(7)))
-                    # NB: the card area is before the pointer, hence munus.
-                    byte_addr = js.Minus(obj, byte_ofs)
+                    byte_addr = js.Plus(obj, byte_ofs)
                     old_byte_data = js.HeapData(js.Int8, byte_addr)
                     new_byte_data = js.Or(old_byte_data, byte_mask)
                     self.bldr.emit_store(new_byte_data, byte_addr, js.Int8)
@@ -1489,8 +1495,8 @@ class AssemblerASMJS(object):
         # Remember, our offsets are in bytes but the gcmap indexes whole words.
         frame_size = self.spilled_frame_offset // WORD
         gcmap_size = (frame_size // WORD // 8) + 1
-        gcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
-        gcmap = rffi.cast(lltype.Ptr(jitframe.GCMAP), gcmap)
+        rawgcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
+        gcmap = rffi.cast(lltype.Ptr(jitframe.GCMAP), rawgcmap)
         for i in xrange(gcmap_size):
             gcmap[i] = r_uint(0)
         # Set a bit for every REF that has been spilled.
@@ -1638,6 +1644,7 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
         # Write the potential failargs into the frame.
         # We have to spill them here because the forcing logic might
         # need to read them out to populate the virtualizable.
+        # They must be spilled at their final output location.
         assert self.orig_spilled_frame_offset == 0
         failargs = self.guardop.getfailargs()
         locations = self.assembler._get_frame_locations(failargs)
