@@ -1094,9 +1094,8 @@ class AssemblerASMJS(object):
         descr = op.getdescr()
         fail_descr = cast_instance_to_gcref(descr)
         rgc._make_sure_does_not_move(fail_descr)
-        # If there's a return value, write it into the frame.
-        if op.numargs() == 1:
-            self._genop_write_output_args(op.getarglist())
+        # Write return value into the frame.
+        self._genop_write_output_args(op.getarglist())
         # Write the descr into the frame slot.
         addr = js.JitFrameDescrAddr()
         self.bldr.emit_store(js.ConstPtr(fail_descr), addr, js.Int32)
@@ -1278,6 +1277,7 @@ class AssemblerASMJS(object):
             addr = js.JitFrameDescrAddr()
             self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
             # Bail back to the invoking code to deal with it.
+            self._genop_store_gcmap()
             self.bldr.emit_exit()
 
     #
@@ -1336,7 +1336,7 @@ class AssemblerASMJS(object):
         itemsize = op.getarg(1).getint()
         lengthbox = op.getarg(2)
         assert isinstance(lengthbox, BoxInt)
-        lengthvar = self._get_jsval(lengthbox)
+        lengthvar = self._genop_realize_box(lengthbox)
         # Figure out the total size to be allocated.
         # It's gcheader + basesize + length*itemsize, rounded up to wordsize.
         if hasattr(gc_ll_descr, 'gcheaderbuilder'):
@@ -1369,9 +1369,9 @@ class AssemblerASMJS(object):
         self.bldr.emit_assignment(new_nfree, js.Plus(resvar, totalsize))
         # But we have to check whether we overflowed nursery_top,
         # or created an object too large for the nursery.
-        check = js.And(js.LessThanEq(new_nfree, ntop),
-                       js.LessThan(totalsize, maxsize))
-        with self.bldr.emit_if_block(check):
+        chk_not_overflowed = js.And(js.LessThanEq(new_nfree, ntop),
+                                    js.LessThan(totalsize, maxsize))
+        with self.bldr.emit_if_block(chk_not_overflowed):
             # If we fit in the nursery, we're all good!
             # Increment nursery_free and set type flags on the object.
             self.bldr.emit_store(new_nfree, nfree_addr, js.Int32)
@@ -1379,7 +1379,7 @@ class AssemblerASMJS(object):
         with self.bldr.emit_else_block():
             # If it didn't fit in the nursery, we have to call out to malloc.
             if kind == rewrite.FLAG_ARRAY:
-                args = [js.ConstInt(WORD),
+                args = [js.ConstInt(itemsize),
                         js.ConstInt(arraydescr.tid),
                         lengthvar]
                 callsig = "iiii"
@@ -1591,9 +1591,7 @@ class ctx_spill_to_frame(object):
                 self.assembler.spilled_frame_locations[box].remove(pos)
                 if not self.assembler.spilled_frame_locations[box]:
                     del self.assembler.spilled_frame_locations[box]
-        # Reset frame metadata to point to restored offset.
         self.assembler.spilled_frame_offset = orig_offset
-        self.assembler._genop_store_gcmap()
 
     def is_spilled(self, box):
         try:
@@ -1627,6 +1625,7 @@ class ctx_spill_to_frame(object):
         self.assembler.spilled_frame_locations[box].append(offset)
         self.assembler.spilled_frame_values[offset] = box
         return offset
+
 
 class ctx_guard_not_forced(ctx_spill_to_frame):
 
