@@ -1,6 +1,6 @@
 
 from rpython.rlib.unroll import unrolling_iterable
-from rpython.rtyper.lltypesystem import lltype, llmemory
+from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
 from rpython.rtyper.llinterp import LLInterpreter
 from rpython.rtyper.annlowlevel import llhelper, cast_instance_to_gcref
 from rpython.jit.backend.llsupport.llmodel import AbstractLLCPU
@@ -9,27 +9,7 @@ from rpython.jit.metainterp import history
 
 from rpython.jit.backend.asmjs import support
 from rpython.jit.backend.asmjs.assembler import AssemblerASMJS
-
-
-def execute_trampoline(func_id, ll_frame):
-    frame = lltype.cast_opaque_ptr(jitframe.JITFRAMEPTR, ll_frame)
-    ll_frame_ptr = CPU_ASMJS.cast_ptr_to_int(ll_frame)
-    next_call = support.jitInvoke(func_id, ll_frame_ptr, 0)
-    frame = frame.resolve()
-    ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
-    while next_call != 0:
-        # High 24 bits give the function id.
-        # Low 8 bits give the target label within that function.
-        func_id = next_call >> 8
-        func_goto = next_call & 0xFF
-        ll_frame_ptr = CPU_ASMJS.cast_ptr_to_int(ll_frame)
-        next_call = support.jitInvoke(func_id, ll_frame_ptr, func_goto)
-        frame = frame.resolve()
-        ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
-    return ll_frame
-
-ARGS = [lltype.Signed, llmemory.GCREF]
-EXEFUNCPTR = lltype.Ptr(lltype.FuncType(ARGS, llmemory.GCREF))
+from rpython.jit.backend.asmjs.arch import WORD, SANITYCHECK
 
 
 class CPU_ASMJS(AbstractLLCPU):
@@ -48,6 +28,13 @@ class CPU_ASMJS(AbstractLLCPU):
     supports_singlefloats = False
     supports_longlong = False
     with_threads = False
+    backend_name = "asmjs"
+
+    def __init__(self, rtyper, stats, opts=None, translate_support_code=False,
+                 gcdescr=None):
+        AbstractLLCPU.__init__(self, rtyper, stats, opts,
+                               translate_support_code, gcdescr)
+        self._make_execute_trampoline_func()
 
     def set_debug(self, flag):
         return self.assembler.set_debug(flag)
@@ -111,7 +98,10 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
-                ll_frame = execute_trampoline(func_id, ll_frame)
+                self.set_frame_next_call(ll_frame, func_id, 0)
+                ll_frame_adr = self.cast_ptr_to_int(ll_frame)
+                ll_frame_adr = self._execute_trampoline_func(ll_frame_adr)
+                ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
             finally:
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
@@ -119,9 +109,42 @@ class CPU_ASMJS(AbstractLLCPU):
 
         return execute_token
 
+    def set_frame_next_call(self, ll_frame, func_id, func_goto):
+        # High 24 bits give the function id.
+        # Low 8 bits give the target label within that function.
+        assert func_id < 2**24
+        assert func_goto < 0xFF
+        next_call = (func_id << 8) | func_goto
+        offset = self.get_ofs_of_frame_field('jf_force_descr')
+        self.write_int_at_mem(ll_frame, offset, WORD, 0, next_call)
+
+    def get_frame_next_call(self, ll_frame):
+        offset = self.get_ofs_of_frame_field('jf_force_descr')
+        next_call = self.read_int_at_mem(ll_frame, offset, WORD, 0)
+        func_id = next_call >> 8
+        func_goto = next_call & 0xFF
+        return (func_id, func_goto)
+
     def get_execute_trampoline_adr(self):
-        exeptr = llhelper(EXEFUNCPTR, execute_trampoline)
+        exeptr = llhelper(self._execute_trampoline_FUNCPTR,
+                          self._execute_trampoline_func)
         return self.cast_ptr_to_int(exeptr)
+
+    def _make_execute_trampoline_func(self):
+
+        def execute_trampoline(ll_frame_adr):
+            ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
+            func_id, func_goto = self.get_frame_next_call(ll_frame)
+            while func_id != 0:
+                ll_frame_adr = support.jitInvoke(func_id, ll_frame_adr)
+                ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
+                func_id, func_goto = self.get_frame_next_call(ll_frame)
+            return ll_frame_adr
+ 
+        ARGS = [rffi.INT]
+        EXEFUNCPTR = lltype.Ptr(lltype.FuncType(ARGS, rffi.INT))
+        self._execute_trampoline_func = execute_trampoline
+        self._execute_trampoline_FUNCPTR = EXEFUNCPTR
 
     def compile_loop(self, inputargs, operations, looptoken,
                      log=True, name=''):

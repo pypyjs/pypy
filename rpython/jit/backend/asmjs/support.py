@@ -77,18 +77,18 @@ def jitReplace(oldfuncid, newfuncid):
     _jitCompiledFunctions[oldfuncid] = _jitCompiledFunctions[newfuncid]
 
 
-@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT)
-def jitInvoke(funcid, llframe, target):
+@jsexternal([rffi.INT, rffi.INT], rffi.INT)
+def jitInvoke(funcid, data):
     func = _jitCompiledFunctions.get(funcid, None)
     if func is None:
         return 0
-    return func(llframe, target)
+    return int(func(data))
 
 
 @jsexternal([rffi.INT], lltype.Void)
 def jitFree(funcid):
     _jitCompiledFunctions[funcid] = None
-    while len(_jitCompiledFunctions) == funcid + 1:
+    while funcid and len(_jitCompiledFunctions) == funcid + 1:
         del _jitCompiledFunctions[funcid]
         funcid -= 1
 
@@ -99,7 +99,7 @@ def jitFree(funcid):
 
 def load_asmjs(jssource, stdlib=None, foreign=None, heap=None):
     """Load asmjs source code as an equivalent python function."""
-    validate_asmjs(jssource)
+    #validate_asmjs(jssource)
     func = compile_asmjs(jssource)
     if heap is None:
         heap = NativeHeap()
@@ -572,7 +572,7 @@ class STDLIB(object):
             return NUM(ToInt32((ToInt32(a) * ToInt32(b))))
 
 
-# We need ome 8-byte-aligned memory to use as temporary storage
+# We need some 8-byte-aligned memory to use as temporary storage
 # when loading/storing unaligned floats.
 
 tempDoubleStorage = ctypes.create_string_buffer(12)

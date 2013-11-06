@@ -213,6 +213,7 @@ tempDoublePtr = TempDoublePtr()
 
 
 zero = ConstInt(0)
+word = ConstInt(WORD)
 
 
 class HeapData(ASMJSValue):
@@ -615,6 +616,7 @@ class DynCallFunc(_CallFunc):
 
 
 jitFrame = IntVar("jitframe")
+goto = IntVar("goto")
 
 
 class _JitFrameFieldAddr(ASMJSValue):

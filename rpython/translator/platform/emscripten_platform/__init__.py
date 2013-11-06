@@ -31,6 +31,7 @@ class EmscriptenPlatform(BasePosix):
     name = "emscripten"
 
     exe_ext = 'js'
+    so_ext = 'so'
     DEFAULT_CC = 'emcc'
     standalone_only = []
 
@@ -58,9 +59,15 @@ class EmscriptenPlatform(BasePosix):
       # XXX TODO: ensure that pypy GC can detect when this runs out.
       #"-s", "ALLOW_MEMORY_GROWTH=1",
       "-s", "TOTAL_MEMORY=536870912",
+      # Some dummy includes to convince things to compile properly.
+      # XXX TODO: only include these when needed.
+      "-I", os.path.dirname(__file__),
       # For compiling with JIT.
       # XXX TODO: only include this when jit is enabled.
       "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
+      # PyPy usually produces a couple of very large functions, particularly
+      # with the JIT included.  Try to break them up a little.
+      "-s", "OUTLINING_LIMIT=150000",
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",

@@ -89,6 +89,8 @@ class TestRegallocGcIntegration(BaseTestRegalloc):
                 assert nos ==  [0, 1, 25]
         elif self.cpu.backend_name.startswith('arm'):
             assert nos == [0, 1, 47]
+        elif self.cpu.backend_name.startswith('asmjs'):
+            assert nos == [0, 2, 3]
         else:
             raise Exception("write the data here")
         assert frame.jf_frame[nos[0]]
@@ -246,7 +248,7 @@ class TestMallocFastpath(BaseTestRegalloc):
         p0 = call_malloc_nursery_varsize_frame(i0)
         p1 = call_malloc_nursery_varsize_frame(i1)
         p2 = call_malloc_nursery_varsize_frame(i2)
-        guard_true(i0) [p0, p1, p2]
+        guard_false(i0) [p0, p1, p2]
         '''
         self.interpret(ops, [16, 32, 16])
         # check the returned pointers
@@ -325,7 +327,9 @@ class TestMallocFastpath(BaseTestRegalloc):
                 assert frame.jf_gcmap[idx] == (1<<29) | (1 << 30)
             else:
                 assert frame.jf_gcmap[idx]
-                exp_idx = self.cpu.JITFRAME_FIXED_SIZE - 32 * idx + 1 # +1 from i0
+                exp_idx = self.cpu.JITFRAME_FIXED_SIZE - 32 * idx
+                if not self.cpu.backend_name.startswith('asmjs'):
+                    exp_idx += 1 # +1 from i0
                 assert frame.jf_gcmap[idx] == (1 << (exp_idx + 1)) | (1 << exp_idx)
 
         self.cpu = self.getcpu(check)
@@ -353,7 +357,10 @@ class TestMallocFastpath(BaseTestRegalloc):
     def test_save_regs_around_malloc(self):
         def check(frame):
             x = frame.jf_gcmap
-            if self.cpu.IS_64_BIT:
+            if self.cpu.backend_name.startswith('asmjs'):
+                assert len(x) == 1
+                assert bin(x[0]).count('1') == 16
+            elif self.cpu.IS_64_BIT:
                 assert len(x) == 1
                 assert (bin(x[0]).count('1') ==
                         '0b1111100000000000000001111111011110'.count('1'))
@@ -640,6 +647,8 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
             elif self.cpu.backend_name.startswith('arm'):
                 assert gcmap == [44, 45, 46]
                 pass
+            elif self.cpu.backend_name.startswith('asmjs'):
+                assert gcmap == [0, 1, 2]
             else:
                 assert gcmap == [22, 23, 24]
             for item, s in zip(gcmap, new_items):
@@ -686,7 +695,7 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
         frame = lltype.cast_opaque_ptr(JITFRAMEPTR, frame)
         gcmap = unpack_gcmap(lltype.cast_opaque_ptr(JITFRAMEPTR, frame))
         assert len(gcmap) == 1
-        assert gcmap[0] < self.cpu.JITFRAME_FIXED_SIZE
+        assert gcmap[0] <= self.cpu.JITFRAME_FIXED_SIZE
         item = rffi.cast(lltype.Ptr(S), frame.jf_frame[gcmap[0]])
         assert item == new_items[2]
 

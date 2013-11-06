@@ -8,52 +8,7 @@ from rpython.jit.backend.asmjs.arch import SANITYCHECK
 
 
 class ASMJSBuilder(object):
-    """Class for building ASMJS assembly of a trace.
-
-    This class can be used to build up the source for a single-function ASMJS
-    module.  The structure of the code is optimized for a labelled trace with
-    a single jump backwards at the end.  It renders the code as a prelude
-    followed by a single while-loop. Jumps into labeled points in the code are
-    facilitated by conditionals and an input argument named "goto":
-
-        function (jitframe, goto) {
-          if (goto <= 0) {
-            <block zero>
-          }
-          ...
-          if (goto <= M) {
-            <block M>
-          }
-          while(true) {
-            if (goto <= M+1) {
-              <block M+1>
-            }
-            ...
-            if (goto <= N) {
-              <block N>
-            }
-            goto = 0;
-            continue
-          }
-        }
-
-    According to the emscripten technical paper, it is quite important to use
-    high-level control-flow structures rather than a more general switch-in-
-    a-loop.  An alternative would be to import and use the whole emscripten
-    relooper algorithm, but that sounds painful and expensive.
-
-    XXX TODO: is this too general, or too broad?  try to do better!
-    XXX TODO: benchmark against a generic switch-in-a-loop construct.
-
-    The compiled function always returns an integer.  If it returns zero then
-    execution has completed.  If it returns a positive integer, this identifies
-    another compiled function into which execution should jump.  We expect to
-    be run inside some sort of trampoline that can execute these jumps without
-    blowing the call stack.
-
-    XXX TODO: produce more concise code once we're sure it's working,
-              e.g. by removing newlines and semicolons.
-    """
+    """Class for building ASMJS assembly of a trace."""
 
     def __init__(self, cpu):
         self.cpu = cpu
@@ -65,6 +20,7 @@ class ASMJSBuilder(object):
         self.token_labels = {}
         self.loop_entry_token = None
         self.imported_functions = {}
+        self._emit_initial_code()
 
     def finish(self):
         return "".join(self._build_prelude() +
@@ -90,15 +46,14 @@ class ASMJSBuilder(object):
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
-        chunks.append('function F(jitframe, goto){\n')
+        chunks.append('function F(jitframe){\n')
         chunks.append('jitframe=jitframe|0;\n')
-        chunks.append('goto=goto|0;\n')
+        chunks.append('var goto=0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
             assert "." in ("%f" % (init_double,))
             chunks.append("var %s=%f;\n" % (varname, init_double))
-        chunks.append("if((goto|0) <= (0|0)){\n")
         return chunks
 
     def _build_epilog(self):
@@ -110,12 +65,18 @@ class ASMJSBuilder(object):
             chunks.append("goto = 0|0;\n")
             chunks.append("}\n")
         # The compiled function always returns zero when it's finished.
-        chunks.append('return 0;\n')
+        chunks.append('return jitframe|0;\n')
         chunks.append('}\n')
         # Export the singleton compiled function.
         chunks.append('return F;\n')
         chunks.append('}\n')
         return chunks
+
+    def _emit_initial_code(self):
+        self.emit_get_frame_next_call(jsval.goto, jsval.jitFrame)
+        goto_mask = jsval.ConstInt(0xFF)
+        self.emit_assignment(jsval.goto, jsval.And(jsval.goto, goto_mask))
+        self.emit("if((goto|0) <= (0|0)){\n")
 
     def allocate_intvar(self):
         """Allocate a variable of type int.
@@ -322,41 +283,36 @@ class ASMJSBuilder(object):
             self.emit_store(word2, jsval.Plus(tempaddr, wordsize), jsval.Int32)
             self.free_intvar(tempaddr)
 
-    def emit_jump(self, token):
-        """Emit a jump to the given token.
-
-        For jumps to the loop-entry token of the current function, this just
-        moves to the next iteration of the loop.  For other targets it looks
-        up the compiled functionid and goto address, and returns that value
-        to the trampoline.
-        """
-        assert isinstance(token, TargetToken)
-        if token == self.loop_entry_token:
-            # A local loop, just move to the next iteration.
-            self.emit_statement("goto = 0|0")
-            self.emit_statement("continue")
-        else:
-            # An external loop, need to goto via trampoline.
-            self.emit_goto(token._asmjs_funcid, token._asmjs_label)
-
-    def emit_goto(self, funcid, label=0):
-        """Emit a goto to the funcid and label.
-
-        Essentially we just encode the funcid and label into a single integer
-        and return it.  We expect to be running inside some sort of trampoline
-        that can actually execute the goto.
-        """
+    def emit_set_frame_next_call(self, framevar, funcid, goto=0):
+        # High 24 bits give the function id.
+        # Low 8 bits give the target label within that function.
         assert funcid < 2**24
-        assert label < 0xFF
-        next_call = (funcid << 8) | label
-        self.emit_statement("return %d" % (next_call,))
+        assert goto < 0xFF
+        next_call = (funcid << 8) | goto
+        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
+        self.emit_store(jsval.ConstInt(next_call),
+                        jsval.Plus(framevar, jsval.ConstInt(offset)),
+                        jsval.UInt32)
+
+    def emit_get_frame_next_call(self, callvar, framevar):
+        # High 24 bits give the function id.
+        # Low 8 bits give the target label within that function.
+        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
+        self.emit_load(callvar,
+                       jsval.Plus(framevar, jsval.ConstInt(offset)),
+                       jsval.UInt32)
+
+    def emit_continue_loop(self):
+        self.emit_statement("goto = 0|0")
+        self.emit_statement("continue")
 
     def emit_exit(self):
         """Emit an immediate return from the function."""
-        self.emit("return 0;\n")
+        self.emit("return jitframe|0;\n")
 
     def emit_comment(self, msg):
-        self.emit("// %s\n" % (msg,))
+        if SANITYCHECK:
+            self.emit("// %s\n" % (msg,))
 
     def emit_debug(self, msg, values=None):
         if SANITYCHECK:
