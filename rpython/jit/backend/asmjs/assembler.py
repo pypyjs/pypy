@@ -241,6 +241,7 @@ class AssemblerASMJS(object):
 
     def _assemble(self, inputargs, operations):
         """Generate the body of the asmjs function for the given trace."""
+        req_depth = self.bldr.allocate_intvar()
         self.longevity, _ = compute_vars_longevity(inputargs, operations)
         self._find_loop_entry_token(operations)
         # Load input arguments from frame if we are entering from the top.
@@ -250,11 +251,10 @@ class AssemblerASMJS(object):
         # XXX TODO: this is silly to do at the entry to every function,
         # but greatly simplifies things for now.
         cur_depth = js.HeapData(js.Int32, js.JitFrameSizeAddr())
-        req_depth = self.bldr.allocate_intvar()
         with self.bldr.emit_if_block(js.LessThan(cur_depth, req_depth)):
             newframe = js.DynCallFunc("iii",
                                       js.ConstInt(self.cpu.realloc_frame),
-                                      [js.jitFrame, cur_depth])
+                                      [js.jitFrame, req_depth])
             self.bldr.emit_assignment(js.jitFrame, newframe)
         # Walk the list of operations, emitting code for each.
         # We expend some modest effort to generate "nice" javascript code,
