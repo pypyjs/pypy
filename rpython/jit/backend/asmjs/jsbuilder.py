@@ -73,9 +73,15 @@ class ASMJSBuilder(object):
         return chunks
 
     def _emit_initial_code(self):
+        # Load the target label from the frame.
+        # We only need the lower 8 bits; the rest are the id of this function.
         self.emit_get_frame_next_call(jsval.goto, jsval.jitFrame)
         goto_mask = jsval.ConstInt(0xFF)
         self.emit_assignment(jsval.goto, jsval.And(jsval.goto, goto_mask))
+        # Clear the slot, since we're co-opting jf_force_descr for
+        # this purpose and the label is not a valid gcref.
+        self.emit_set_frame_next_call(jsval.jitFrame, 0, 0)
+        # Always begin a label zero.
         self.emit("if((goto|0) <= (0|0)){\n")
 
     def allocate_intvar(self):

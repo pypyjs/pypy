@@ -61,11 +61,12 @@ class CPU_ASMJS(AbstractLLCPU):
         We need to look up the id, build the necessary frame, and then call the
         helper function "jitInvoke" to execute the compiled function.
 
-        The compiled code will return either 0, indicating that it's done and
-        we can find the results in the frame, or a positive integer indicating
-        another compiled function that should be invoked.  We loop over this,
-        executing each function in turn until they're done.  It's a simple
-        simulation of GOTOs between the compiled chunks of code.
+        The compiled code will return the frame object with jf_force_descr set
+        to indicate control flow.  If zero then it's dne and we can find the
+        results in the frame; if nonzero then it indicates another compiled
+        function that should be invoked.  We loop until it gets set to zero,
+        providing a simple and inefficient simulation of GOTOs between the
+        compiled chunks of code.
 
         This little trampoline is necessary because the main interpreter is
         running in asmjs mode, where it is forbidden to define new functions

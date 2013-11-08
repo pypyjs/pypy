@@ -243,21 +243,11 @@ class AssemblerASMJS(object):
 
     def _assemble(self, inputargs, operations):
         """Generate the body of the asmjs function for the given trace."""
-        req_depth = self.bldr.allocate_intvar()
         self.longevity, _ = compute_vars_longevity(inputargs, operations)
         self._find_loop_entry_token(operations)
-        # Load input arguments from frame if we are entering from the top.
-        with self._genop_if_entered_at(0):
-            self._genop_load_input_args(inputargs)
-        # Check that the frame is big enough, and re-allocate it if not.
-        # XXX TODO: this is silly to do at the entry to every function,
-        # but greatly simplifies things for now.
-        cur_depth = js.HeapData(js.Int32, js.JitFrameSizeAddr())
-        with self.bldr.emit_if_block(js.LessThan(cur_depth, req_depth)):
-            newframe = js.DynCallFunc("iii",
-                                      js.ConstInt(self.cpu.realloc_frame),
-                                      [js.jitFrame, req_depth])
-            self.bldr.emit_assignment(js.jitFrame, newframe)
+        # Load input arguments from frame if we are entering at the label.
+        self.req_depth_var = self.bldr.allocate_intvar()
+        self._genop_label_entry_code(0, inputargs)
         # Walk the list of operations, emitting code for each.
         # We expend some modest effort to generate "nice" javascript code,
         # by e.g. folding constant expressions and eliminating temp variables.
@@ -316,7 +306,7 @@ class AssemblerASMJS(object):
                 self.bldr.emit_exit()
         # Back-patch the required frame depth into the above check.
         req_depth_value = self.required_frame_depth
-        self.bldr.set_initial_value_intvar(req_depth, req_depth_value)
+        self.bldr.set_initial_value_intvar(self.req_depth_var, req_depth_value)
 
     def _get_jsval(self, jitval):
         if isinstance(jitval, Box):
@@ -404,22 +394,39 @@ class AssemblerASMJS(object):
         self.bldr.emit_assignment(boxvar, boxexpr)
         return boxvar
 
-    def _genop_if_entered_at(self, target):
-        test = js.Equal(js.IntVar("goto"), js.ConstInt(target))
-        return self.bldr.emit_if_block(test)
-
-    def _genop_load_input_args(self, inputargs):
+    def _genop_label_entry_code(self, label, inputargs):
         locations = self._get_frame_locations(inputargs)
         assert len(inputargs) == len(locations)
-        for i in xrange(len(inputargs)):
-            box = inputargs[i]
-            if not box:
-                continue
-            offset = locations[i]
-            addr = js.JitFrameSlotAddr(offset)
-            typ = js.HeapType.from_box(box)
-            self.bldr.emit_load(self._get_jsval(box), addr, typ)
-        return locations
+        entered_here = js.Equal(js.IntVar("goto"), js.ConstInt(label))
+        with self.bldr.emit_if_block(entered_here):
+            # Check that the frame is big enough, and re-allocate it if not.
+            cur_depth = js.HeapData(js.Int32, js.JitFrameSizeAddr())
+            frame_too_small = js.LessThan(cur_depth, self.req_depth_var)
+            with self.bldr.emit_if_block(frame_too_small):
+                # We must set a gcmap so that input args are not collected.
+                with ctx_spill_to_frame(self) as f:
+                    for i in xrange(len(inputargs)):
+                        box = inputargs[i]
+                        if not box:
+                            continue
+                        offset = locations[i]
+                        if SANITYCHECK:
+                            assert offset not in  self.spilled_frame_values
+                        f.genop_spill_to_frame(box, offset, fake=True)
+                    self._genop_store_gcmap()
+                    reallocfn = js.ConstInt(self.cpu.realloc_frame)
+                    args = [js.jitFrame, self.req_depth_var]
+                    newframe = js.DynCallFunc("iii", reallocfn, args)
+                    self.bldr.emit_assignment(js.jitFrame, newframe)
+            # Load all input args from the frame.
+            for i in xrange(len(inputargs)):
+                box = inputargs[i]
+                if not box:
+                    continue
+                offset = locations[i]
+                addr = js.JitFrameSlotAddr(offset)
+                typ = js.HeapType.from_box(box)
+                self.bldr.emit_load(self._get_jsval(box), addr, typ)
 
     def _genop_write_output_args(self, inputargs):
         locations = self._get_frame_locations(inputargs)
@@ -446,7 +453,7 @@ class AssemblerASMJS(object):
             typ = js.HeapType.from_box(box)
             alignment = offset % typ.size
             if alignment:
-                offset += alignment
+                offset += typ.size - alignment
             locations[i] = offset
             offset += typ.size
         self._ensure_frame_depth(offset)
@@ -518,8 +525,7 @@ class AssemblerASMJS(object):
         descr._asmjs_funcid = 0  # placeholder; this gets set after compilation
         self.pending_target_tokens.append(descr)
         # Load input arguments from frame if we are entering at this label.
-        with self._genop_if_entered_at(descr._asmjs_label):
-            self._genop_load_input_args(inputargs)
+        self._genop_label_entry_code(descr._asmjs_label, inputargs)
 
     def genop_expr_strgetitem(self, op):
         base = self._get_jsval(op.getarg(0))
@@ -1643,7 +1649,7 @@ class ctx_spill_to_frame(object):
         else:
             return True
 
-    def genop_spill_to_frame(self, box, offset=-1):
+    def genop_spill_to_frame(self, box, offset=-1, fake=False):
         typ = js.HeapType.from_box(box)
         # Allocate it a position at the next available offset.
         # Align each value to a multiple of its size.
@@ -1651,16 +1657,17 @@ class ctx_spill_to_frame(object):
             offset = self.assembler.spilled_frame_offset
             alignment = offset % typ.size
             if alignment:
-                offset += alignment
-        if offset >= self.assembler.spilled_frame_offset:
+                offset += typ.size - alignment
+        if offset + typ.size > self.assembler.spilled_frame_offset:
             self.assembler.spilled_frame_offset = offset + typ.size
         # Generate code to write the value into the frame.
-        addr = js.JitFrameSlotAddr(offset)
-        if isinstance(box, Box):
-            boxexpr = self.assembler._genop_realize_box(box)
-        else:
-            boxexpr = self._get_jsval(box)
-        self.assembler.bldr.emit_store(boxexpr, addr, typ)
+        if not fake:
+            addr = js.JitFrameSlotAddr(offset)
+            if isinstance(box, Box):
+                boxexpr = self.assembler._genop_realize_box(box)
+            else:
+                boxexpr = self._get_jsval(box)
+            self.assembler.bldr.emit_store(boxexpr, addr, typ)
         # Record where we spilled it.
         if box not in self.assembler.spilled_frame_locations:
             self.assembler.spilled_frame_locations[box] = []
