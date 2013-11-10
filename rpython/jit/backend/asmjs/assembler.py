@@ -3,7 +3,7 @@ import os
 import sys
 
 from rpython.rlib import rgc
-from rpython.rlib.rarithmetic import r_uint
+from rpython.rlib.rarithmetic import r_uint, intmask
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.jit.backend.llsupport import symbolic, jitframe, rewrite
 from rpython.jit.backend.llsupport.regalloc import compute_vars_longevity
@@ -197,7 +197,10 @@ class AssemblerASMJS(object):
         lltype.free(frame_info_ptr, flavor="raw")
 
     def _ensure_frame_depth(self, required_offset):
-        required_depth = required_offset / WORD
+        if SANITYCHECK:
+            assert required_offset >= 0
+            assert required_offset % WORD == 0
+        required_depth = intmask(r_uint(required_offset // WORD))
         if self.required_frame_depth < required_depth:
             self.required_frame_depth = required_depth
 
@@ -395,6 +398,7 @@ class AssemblerASMJS(object):
         return boxvar
 
     def _genop_label_entry_code(self, label, inputargs):
+        self.bldr.emit_comment("ENTRY CODE FOR LABEL %d" % (label,))
         locations = self._get_frame_locations(inputargs)
         assert len(inputargs) == len(locations)
         entered_here = js.Equal(js.IntVar("goto"), js.ConstInt(label))
@@ -403,21 +407,22 @@ class AssemblerASMJS(object):
             cur_depth = js.HeapData(js.Int32, js.JitFrameSizeAddr())
             frame_too_small = js.LessThan(cur_depth, self.req_depth_var)
             with self.bldr.emit_if_block(frame_too_small):
-                # We must set a gcmap so that input args are not collected.
+                # We must set a gcmap so that input args are not gc'd.
+                if SANITYCHECK:
+                    assert self.spilled_frame_offset == 0
                 with ctx_spill_to_frame(self) as f:
                     for i in xrange(len(inputargs)):
                         box = inputargs[i]
                         if not box:
                             continue
                         offset = locations[i]
-                        if SANITYCHECK:
-                            assert offset not in  self.spilled_frame_values
-                        f.genop_spill_to_frame(box, offset, fake=True)
-                    self._genop_store_gcmap()
+                        f.genop_spill_to_frame(box, offset, nostore=True)
+                    self._genop_store_gcmap(writebarrier=False)
                     reallocfn = js.ConstInt(self.cpu.realloc_frame)
                     args = [js.jitFrame, self.req_depth_var]
-                    newframe = js.DynCallFunc("iii", reallocfn, args)
-                    self.bldr.emit_assignment(js.jitFrame, newframe)
+                    with ctx_preserve_exception(self):
+                        newframe = js.DynCallFunc("iii", reallocfn, args)
+                        self.bldr.emit_assignment(js.jitFrame, newframe)
             # Load all input args from the frame.
             for i in xrange(len(inputargs)):
                 box = inputargs[i]
@@ -1527,7 +1532,7 @@ class AssemblerASMJS(object):
                     self.bldr.emit_store(new_byte_data, byte_addr, js.Int8)
         self.bldr.free_intvar(flagbytevar)
 
-    def _genop_store_gcmap(self):
+    def _genop_store_gcmap(self, writebarrier=True):
         # If there's nothing spilled, no gcmap is needed.
         if self.spilled_frame_offset == 0:
             self.bldr.emit_comment("NULLING THE GCMAP")
@@ -1535,7 +1540,7 @@ class AssemblerASMJS(object):
             return
         # Make a new gcmap sized to match current size of frame.
         # Remember, our offsets are in bytes but the gcmap indexes whole words.
-        frame_size = self.spilled_frame_offset // WORD
+        frame_size = r_uint(self.spilled_frame_offset // WORD)
         gcmap_size = (frame_size // WORD // 8) + 1
         rawgcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
         gcmap = rffi.cast(lltype.Ptr(jitframe.GCMAP), rawgcmap)
@@ -1545,7 +1550,7 @@ class AssemblerASMJS(object):
         num_refs = 0
         for pos, box in self.spilled_frame_values.iteritems():
             if box and box.type == REF:
-                pos = pos // WORD
+                pos = r_uint(pos // WORD)
                 gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
                 num_refs += 1
         # Do we actually have any refs?
@@ -1567,7 +1572,8 @@ class AssemblerASMJS(object):
             # We might have just stored some young pointers into the frame.
             # Emit a write barrier just in case.
             # XXX TODO: x86 backend only does that when reloading after a gc.
-            self._genop_write_barrier([js.jitFrame])
+            if writebarrier:
+                self._genop_write_barrier([js.jitFrame])
 
     def genop_debug_merge_point(self, op):
         pass
@@ -1649,7 +1655,7 @@ class ctx_spill_to_frame(object):
         else:
             return True
 
-    def genop_spill_to_frame(self, box, offset=-1, fake=False):
+    def genop_spill_to_frame(self, box, offset=-1, nostore=False):
         typ = js.HeapType.from_box(box)
         # Allocate it a position at the next available offset.
         # Align each value to a multiple of its size.
@@ -1661,7 +1667,7 @@ class ctx_spill_to_frame(object):
         if offset + typ.size > self.assembler.spilled_frame_offset:
             self.assembler.spilled_frame_offset = offset + typ.size
         # Generate code to write the value into the frame.
-        if not fake:
+        if not nostore:
             addr = js.JitFrameSlotAddr(offset)
             if isinstance(box, Box):
                 boxexpr = self.assembler._genop_realize_box(box)
@@ -1788,7 +1794,33 @@ class ctx_allow_gc(ctx_spill_to_frame):
             items.sort(key=lambda i: str(i[0]))
             for item in items:
                 yield item
-        
+
+
+class ctx_preserve_exception(object):
+
+    def __init__(self, assembler):
+        self.assembler = assembler
+        self.bldr = self.assembler.bldr
+        self.pos_exctyp = js.ConstInt(assembler.cpu.pos_exception())
+        self.pos_excval = js.ConstInt(assembler.cpu.pos_exc_value())
+        self.var_exctyp = self.bldr.allocate_intvar()
+
+    def __enter__(self):
+        exctyp = js.HeapData(js.Int32, self.pos_exctyp)
+        excval = js.HeapData(js.Int32, self.pos_excval)
+        self.bldr.emit_assignment(self.var_exctyp, exctyp)
+        with self.bldr.emit_if_block(self.var_exctyp):
+            self.bldr.emit_store(excval, js.JitFrameGuardExcAddr(), js.Int32)
+            self.bldr.emit_store(js.zero, self.pos_exctyp, js.Int32)
+            self.bldr.emit_store(js.zero, self.pos_excval, js.Int32)
+
+    def __exit__(self, exc_typ, exc_val, exc_tb):
+        excval = js.HeapData(js.Int32, js.JitFrameGuardExcAddr())
+        with self.bldr.emit_if_block(self.var_exctyp):
+            self.bldr.emit_store(self.var_exctyp, self.pos_exctyp, js.Int32)
+            self.bldr.emit_store(excval, self.pos_excval, js.Int32)
+            self.bldr.emit_store(js.zero, js.JitFrameGuardExcAddr(), js.Int32)
+        self.bldr.free_intvar(self.var_exctyp)
 
 
 # Build a dispatch table mapping opnums to the method that emits code for them.

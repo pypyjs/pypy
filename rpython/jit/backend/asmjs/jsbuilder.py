@@ -320,13 +320,13 @@ class ASMJSBuilder(object):
         if SANITYCHECK:
             self.emit("// %s\n" % (msg,))
 
-    def emit_debug(self, msg, values=None):
+    def emit_debug(self, msg, values):
         if SANITYCHECK:
-            self.emit("log(\"%s\"" % (msg,))
-            if values is not None:
-                for value in values:
+            self.emit("print(\"%s\"" % (msg,))
+            if values:
+                for i in xrange(len(values)):
                     self.emit(",")
-                    self.emit_value(value)
+                    self.emit_value(values[i])
             self.emit(");\n")
 
     def emit_if_block(self, test):
