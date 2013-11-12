@@ -212,7 +212,8 @@ class TempDoublePtr(IntVar):
 tempDoublePtr = TempDoublePtr()
 
 
-zero = ConstInt(0)
+zero = false = ConstInt(0)
+one = true = ConstInt(1)
 word = ConstInt(WORD)
 
 
@@ -390,6 +391,7 @@ class IMul(ASMJSBinaryOp):
     """ASMJSBinaryOp representing integer multiplication."""
 
     jstype = Signed
+    operator = "*"
 
     def __init__(self, lhs, rhs):
         if SANITYCHECK:
@@ -404,11 +406,10 @@ class IMul(ASMJSBinaryOp):
         ASMJSBinaryOp.__init__(self, lhs, rhs)
 
     def emit_value(self, js):
+        # For small constant RHS, we can emit normal multiplication.
+        # For other arguments we must use Math.imul helper.
         if isinstance(self.rhs, ConstInt):
-            js.emit("(")
-            js.emit_value(self.lhs)
-            js.emit(")*")
-            js.emit_value(self.rhs)
+            ASMJSBinaryOp.emit_value(self, js)
         else:
             js.emit("imul(")
             js.emit_value(self.lhs)
@@ -616,7 +617,6 @@ class DynCallFunc(_CallFunc):
 
 
 jitFrame = IntVar("jitframe")
-goto = IntVar("goto")
 
 
 class _JitFrameFieldAddr(ASMJSValue):

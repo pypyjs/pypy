@@ -17,10 +17,7 @@ class ASMJSBuilder(object):
         self.all_doublevars = {}
         self.free_intvars = []
         self.free_doublevars = []
-        self.token_labels = {}
-        self.loop_entry_token = None
         self.imported_functions = {}
-        self._emit_initial_code()
 
     def finish(self):
         return "".join(self._build_prelude() +
@@ -48,7 +45,6 @@ class ASMJSBuilder(object):
         # The function definition, including variable declarations.
         chunks.append('function F(jitframe){\n')
         chunks.append('jitframe=jitframe|0;\n')
-        chunks.append('var goto=0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
@@ -58,31 +54,13 @@ class ASMJSBuilder(object):
 
     def _build_epilog(self):
         chunks = []
-        # End the final labelled block.
-        chunks.append("}\n")
-        # End the loop, if we're in one.
-        if self.loop_entry_token is not None:
-            chunks.append("goto = 0|0;\n")
-            chunks.append("}\n")
-        # The compiled function always returns zero when it's finished.
+        # The compiled function always returns jitframe when it's finished.
         chunks.append('return jitframe|0;\n')
         chunks.append('}\n')
         # Export the singleton compiled function.
         chunks.append('return F;\n')
         chunks.append('}\n')
         return chunks
-
-    def _emit_initial_code(self):
-        # Load the target label from the frame.
-        # We only need the lower 8 bits; the rest are the id of this function.
-        self.emit_get_frame_next_call(jsval.goto, jsval.jitFrame)
-        goto_mask = jsval.ConstInt(0xFF)
-        self.emit_assignment(jsval.goto, jsval.And(jsval.goto, goto_mask))
-        # Clear the slot, since we're co-opting jf_force_descr for
-        # this purpose and the label is not a valid gcref.
-        self.emit_set_frame_next_call(jsval.jitFrame, 0, 0)
-        # Always begin a label zero.
-        self.emit("if((goto|0) <= (0|0)){\n")
 
     def allocate_intvar(self):
         """Allocate a variable of type int.
@@ -131,36 +109,6 @@ class ASMJSBuilder(object):
         """Set the initial value of an integer variable."""
         assert isinstance(var, jsval.DoubleVar)
         self.all_doublevars[var.varname] = value
-
-    def set_loop_entry_token(self, token):
-        """Indicate which token is the target of the final JUMP operation.
-
-        If the trace being compiled ends in a JUMP operation, this method
-        should be called to indicate the target of that jump.  It causes the
-        generated code to contain an appropriate loop statement.
-        """
-        assert self.loop_entry_token is None
-        self.loop_entry_token = token
-
-    def emit_token_label(self, token):
-        """Emit a label indicating the start of this token's block.
-
-        This function can be be used to split up the generated code into
-        distinct labelled blocks.  It returns an integer identifying the
-        label for the token; passing this integer as the 'goto' argument
-        will jump control directly to that label.
-        """
-        assert isinstance(token, TargetToken)
-        # Close the previous block.
-        self.emit("}\n")
-        # If this is the loop token, enter the loop.
-        if token == self.loop_entry_token:
-            self.emit("while(1){\n")
-        # Assign a label and begin the new block.
-        label = len(self.token_labels) + 1
-        self.token_labels[token] = label
-        self.emit("if((goto|0) <= (%d|0)){\n" % (label,))
-        return label
 
     def emit(self, code):
         """Emit the given string directly into the generated code."""
@@ -289,27 +237,7 @@ class ASMJSBuilder(object):
             self.emit_store(word2, jsval.Plus(tempaddr, wordsize), jsval.Int32)
             self.free_intvar(tempaddr)
 
-    def emit_set_frame_next_call(self, framevar, funcid, goto=0):
-        # High 24 bits give the function id.
-        # Low 8 bits give the target label within that function.
-        assert funcid < 2**24
-        assert goto < 0xFF
-        next_call = (funcid << 8) | goto
-        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
-        self.emit_store(jsval.ConstInt(next_call),
-                        jsval.Plus(framevar, jsval.ConstInt(offset)),
-                        jsval.UInt32)
-
-    def emit_get_frame_next_call(self, callvar, framevar):
-        # High 24 bits give the function id.
-        # Low 8 bits give the target label within that function.
-        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
-        self.emit_load(callvar,
-                       jsval.Plus(framevar, jsval.ConstInt(offset)),
-                       jsval.UInt32)
-
     def emit_continue_loop(self):
-        self.emit_statement("goto = 0|0")
         self.emit_statement("continue")
 
     def emit_exit(self):
@@ -320,9 +248,9 @@ class ASMJSBuilder(object):
         if SANITYCHECK:
             self.emit("// %s\n" % (msg,))
 
-    def emit_debug(self, msg, values):
+    def emit_debug(self, msg, values=None):
         if SANITYCHECK:
-            self.emit("print(\"%s\"" % (msg,))
+            self.emit("log(\"%s\"" % (msg,))
             if values:
                 for i in xrange(len(values)):
                     self.emit(",")
@@ -334,6 +262,15 @@ class ASMJSBuilder(object):
 
     def emit_else_block(self):
         return ctx_else_block(self)
+
+    def emit_while_block(self, test):
+        return ctx_while_block(self, test)
+
+    def emit_switch_block(self, value):
+        return ctx_switch_block(self, value)
+
+    def emit_case_block(self, value):
+        return ctx_case_block(self, value)
 
 
 class ctx_if_block(object):
@@ -361,6 +298,62 @@ class ctx_else_block(object):
 
     def __enter__(self):
         self.js.emit("else {\n")
+        return self.js
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.js.emit("}\n")
+
+
+class ctx_while_block(object):
+
+    def __init__(self, js, test):
+        self.js = js
+        if not jsval.istype(test, jsval.Int):
+            test = jsval.IntCast(test)
+        self.test = test
+
+    def __enter__(self):
+        self.js.emit("while(")
+        self.js.emit_value(self.test)
+        self.js.emit("){\n")
+        return self.js
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.js.emit("}\n")
+
+
+class ctx_switch_block(object):
+
+    def __init__(self, js, value):
+        self.js = js
+        if not jsval.istype(value, jsval.Signed):
+            value = jsval.SignedCast(value)
+        self.value = value
+
+    def __enter__(self):
+        self.js.emit("switch(")
+        self.js.emit_value(self.value)
+        self.js.emit("){\n")
+        return self.js
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.js.emit("default:\n")
+        self.js.emit_exit()
+        self.js.emit("}\n")
+
+
+class ctx_case_block(object):
+
+    def __init__(self, js, value):
+        self.js = js
+        if not jsval.istype(value, jsval.Signed):
+            value = jsval.SignedCast(value)
+        self.value = value
+
+    def __enter__(self):
+        self.js.emit("case (")
+        self.js.emit_value(self.value)
+        self.js.emit("): {\n")
         return self.js
 
     def __exit__(self, exc_type, exc_val, exc_tb):

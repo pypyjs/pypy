@@ -183,6 +183,7 @@ class CompileASMJSVisitor(RPythonVisitor):
     def __init__(self):
         self._chunks = []
         self._indent = ""
+        self._loop_or_switch = []
 
     def getpysource(self):
         return "".join(self._chunks)
@@ -271,7 +272,38 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.dispatch(node.children[0])
         self.emit("):")
         self.indent()
+        self._loop_or_switch.append("loop")
         self.dispatch(node.children[1])
+        self._loop_or_switch.pop()
+        self.dedent()
+
+    def visit_stmt_switch(self, node):
+        self.emit("__switchvar = ")
+        self.dispatch(node.children[0])
+        self.newline()
+        self.emit("if False:")
+        self.indent()
+        self.emit("pass")
+        self.dedent()
+        self._loop_or_switch.append("switch")
+        for child in node.children[1:]:
+            self.dispatch(child)
+        self._loop_or_switch.pop()
+
+    def visit_stmt_case(self, node):
+        assert self._loop_or_switch[-1] == "switch"
+        self.emit("elif __switchvar == ")
+        self.dispatch(node.children[0])
+        self.emit(":")
+        self.indent()
+        self.dispatch(node.children[1])
+        self.dedent()
+
+    def visit_stmt_default(self, node):
+        assert self._loop_or_switch[-1] == "switch"
+        self.emit("else:")
+        self.indent()
+        self.dispatch(node.children[0])
         self.dedent()
 
     def visit_stmt_expr(self, node):
@@ -298,7 +330,8 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.newline()
 
     def visit_stmt_break(self, node):
-        self.emit("break")
+        if self._loop_or_switch[-1] == "loop":
+            self.emit("break")
         self.newline()
 
     def visit_stmt_continue(self, node):
@@ -691,7 +724,8 @@ funcdecl: ["function"] IDENTIFIER ["("] declargs [")"] stmt_block;
 
 # All the different kinds of statement.
 
-stmt: <stmt_block> | <stmt_if> | <stmt_while> | <stmt_line> [";"];
+stmt: <stmt_block> | <stmt_if> | <stmt_while> |
+      <stmt_switch> | <stmt_line> [";"];
 
 stmt_line: <stmt_assign> | <stmt_var> | <stmt_expr> |
            <stmt_return> | <stmt_break> | <stmt_continue>;
@@ -701,6 +735,12 @@ stmt_block: ["{"] stmt* ["}"];
 stmt_if: ["if" "("] expr [")"] stmt (["else"] stmt)?;
 
 stmt_while: ["while" "("] expr [")"] stmt;
+
+stmt_switch: ["switch" "("] expr [")" "{"] stmt_case* ["}"];
+
+stmt_case: ["case" "("] expr [")" ":"] stmt | <stmt_default>;
+
+stmt_default: ["default" ":"] stmt;
 
 stmt_expr: expr;
 
@@ -791,4 +831,4 @@ callargs: [""] | expr ([","] expr)*;
 
 if __name__ == "__main__":
     import sys
-    parse_asmjs(open(sys.argv[1], "r").read())
+    load_asmjs(open(sys.argv[1], "r").read())

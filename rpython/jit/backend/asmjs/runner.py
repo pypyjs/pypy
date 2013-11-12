@@ -80,7 +80,7 @@ class CPU_ASMJS(AbstractLLCPU):
 
         def execute_token(executable_token, *args):
             clt = executable_token.compiled_loop_token
-            func_id = clt.compiled_function_id
+            func_id = clt.compiled_funcid
             frame_info = clt.frame_info
             frame = self.gc_ll_descr.malloc_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
@@ -170,8 +170,8 @@ class CPU_ASMJS(AbstractLLCPU):
     cast_ptr_to_int = staticmethod(cast_ptr_to_int)
 
     def redirect_call_assembler(self, oldlooptoken, newlooptoken):
-        old_func_id = oldlooptoken.compiled_loop_token.compiled_function_id
-        new_func_id = newlooptoken.compiled_loop_token.compiled_function_id
+        old_func_id = oldlooptoken.compiled_loop_token.compiled_funcid
+        new_func_id = newlooptoken.compiled_loop_token.compiled_funcid
         # XXX TODO: this wont work if the loop is subsequently recompiled.
         support.jitReplace(old_func_id, new_func_id)
 
