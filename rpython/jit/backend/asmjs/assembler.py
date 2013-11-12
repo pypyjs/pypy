@@ -264,11 +264,8 @@ class AssemblerASMJS(object):
                 for block in clt.compiled_blocks:
                     with self.bldr.emit_case_block(js.ConstInt(block.label)):
                         gcmap = block.initial_gcmap
-                        if gcmap is None:
-                            gcmapref = js.zero
-                        else:
-                            gcmapadr = self.cpu.cast_ptr_to_int(gcmap)
-                            gcmapref = js.ConstInt(gcmapadr)
+                        gcmapadr = self.cpu.cast_ptr_to_int(gcmap)
+                        gcmapref = js.ConstInt(gcmapadr)
                         addr = js.JitFrameGCMapAddr()
                         self.bldr.emit_store(gcmapref, gcmapaddr, js.Int32)
             # Now we can call the helper function.
@@ -406,13 +403,10 @@ class CompiledBlockASMJS(object):
 
         # Calculate a gcmap corresponding to the initial layout of the frame.
         # This will be needed if we ever need to enlarge the frame.
-        if len(reflocs) == 0:
-            self.initial_gcmap = None
-        else:
-            self.initial_gcmap = gcmap = self._allocate_gcmap(offset)
-            for pos in reflocs:
-                pos = r_uint(pos // WORD)
-                gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
+        self.initial_gcmap = gcmap = self._allocate_gcmap(offset)
+        for pos in reflocs:
+            pos = r_uint(pos // WORD)
+            gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
 
         # The first time we generate code for this block, we will create
         # gcmaps and store them in the following list.  During subsequent
@@ -445,11 +439,9 @@ class CompiledBlockASMJS(object):
         operations.pop()
 
     def __del__(self):
-        if self.initial_gcmap is not None:
-            lltype.free(self.initial_gcmap, flavor="raw")
+        lltype.free(self.initial_gcmap, flavor="raw")
         for gcmap in self.compiled_gcmaps:
-            if gcmap is not None:
-                lltype.free(gcmap, flavor="raw")
+            lltype.free(gcmap, flavor="raw")
 
     def _allocate_gcmap(self, offset):
         frame_size = r_uint(offset // WORD)
@@ -502,7 +494,7 @@ class CompiledBlockASMJS(object):
 
     def _genop_block_body(self):
         self.bldr.emit_debug("ENTER BLOCK %d" % (self.label,))
-        self.bldr.emit_debug("  ARGS:", map(self._get_jsval, self.inputargs))
+        self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in self.inputargs])
         # Walk the list of operations, emitting code for each.
         # We expend some modest effort to generate "nice" javascript code,
         # by e.g. folding constant expressions and eliminating temp variables.
@@ -551,23 +543,25 @@ class CompiledBlockASMJS(object):
         jumpdescr = self.outtoken
         if jumpdescr is None:
             pass
-        elif jumpdescr._asmjs_funcid == self.clt.compiled_funcid:
-            comment = "JUMP LOCAL [%d]"
-            comment %= (jumpdescr._asmjs_label,)
-            self.bldr.emit_comment(comment)
-            self._genop_local_jump(jumpdescr._asmjs_label, self.outputargs)
         else:
-            comment = "JUMP TO ANOTHER LOOP [%d %d]"
-            comment %= (jumpdescr._asmjs_funcid, jumpdescr._asmjs_label)
-            self.bldr.emit_comment(comment)
-            if SANITYCHECK:
-                target_clt = jumpdescr._asmjs_clt
-                target_blk = target_clt.compiled_blocks[jumpdescr._asmjs_label]
-                assert len(self.outputargs) == len(target_blk.inputargs)
-            self._genop_write_output_args(self.outputargs)
-            self._genop_set_frame_next_call(js.jitFrame,
-                                            jumpdescr._asmjs_funcid,
-                                            jumpdescr._asmjs_label)
+            assert isinstance(jumpdescr, TargetToken)
+            if jumpdescr._asmjs_funcid == self.clt.compiled_funcid:
+                comment = "JUMP LOCAL [%d]"
+                comment = comment % (jumpdescr._asmjs_label,)
+                self.bldr.emit_comment(comment)
+                self._genop_local_jump(jumpdescr._asmjs_label, self.outputargs)
+            else:
+                comment = "JUMP TO ANOTHER LOOP [%d %d]"
+                comment = comment % (jumpdescr._asmjs_funcid, jumpdescr._asmjs_label)
+                self.bldr.emit_comment(comment)
+                if SANITYCHECK:
+                    target_clt = jumpdescr._asmjs_clt
+                    target_blk = target_clt.compiled_blocks[jumpdescr._asmjs_label]
+                    assert len(self.outputargs) == len(target_blk.inputargs)
+                self._genop_write_output_args(self.outputargs)
+                self._genop_set_frame_next_call(js.jitFrame,
+                                                jumpdescr._asmjs_funcid,
+                                                jumpdescr._asmjs_label)
             self.bldr.emit_exit()
         # It's now safe to free all but the input vars
         # so they can be re-used by other blocks.
@@ -1423,8 +1417,8 @@ class CompiledBlockASMJS(object):
         failargs = op.getfailargs()
         with self.bldr.emit_if_block(test):
             self.bldr.emit_debug("GUARD FAILED %s" % (op,))
-            self.bldr.emit_debug("  ARGS:", map(self._get_jsval, op.getarglist()))
-            self.bldr.emit_debug("  FAILARGS:", map(self._get_jsval, failargs))
+            self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in op.getarglist()])
+            self.bldr.emit_debug("  FAILARGS:", [self._get_jsval(a) for a in failargs])
             # If the guard has been compiled into a bridge then
             # jump to that label.  Otherwise spill to frame and exit.
             if descr._asmjs_label != 0:
@@ -1727,28 +1721,19 @@ class CompiledBlockASMJS(object):
                     pos = r_uint(pos // WORD)
                     gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
                     num_refs += 1
-            # Do we actually have any refs?
-            if not num_refs:
-                lltype.free(gcmap, flavor="raw")
-                gcmap = None
-            # Keep it alive by attaching it to this block.
             self.compiled_gcmaps.append(gcmap)
         # Store the appropriate gcmap on the frame.
-        if gcmap is None:
-            self.bldr.emit_comment("STORE GCMAP 0")
-            self.bldr.emit_store(js.zero, js.JitFrameGCMapAddr(), js.Int32)
-        else:
-            comment = "STORE GCMAP"
-            if SANITYCHECK:
-                for i in xrange(len(gcmap)):
-                    comment = comment + " %d" % (gcmap[i],)
-            self.bldr.emit_comment(comment)
-            gcmapref = js.ConstInt(self.cpu.cast_ptr_to_int(gcmap))
-            self.bldr.emit_store(gcmapref, js.JitFrameGCMapAddr(), js.Int32)
-            # We might have just stored some young pointers into the frame.
-            # Emit a write barrier just in case.
-            if writebarrier:
-                self._genop_write_barrier([js.jitFrame])
+        comment = "STORE GCMAP"
+        if SANITYCHECK:
+            for i in xrange(len(gcmap)):
+                comment = comment + " %d" % (gcmap[i],)
+        self.bldr.emit_comment(comment)
+        gcmapref = js.ConstInt(self.cpu.cast_ptr_to_int(gcmap))
+        self.bldr.emit_store(gcmapref, js.JitFrameGCMapAddr(), js.Int32)
+        # We might have just stored some young pointers into the frame.
+        # Emit a write barrier just in case.
+        if writebarrier:
+            self._genop_write_barrier([js.jitFrame])
 
     def genop_debug_merge_point(self, op):
         pass
