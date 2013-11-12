@@ -126,10 +126,9 @@ class AssemblerASMJS(object):
         pass
 
     def invalidate_loop(self, looptoken):
-        looptoken.compiled_loop_token.self.invalidation.counter += 1
+        looptoken.compiled_loop_token.invalidation.counter += 1
 
     def add_code_to_loop(self, clt, inputargs, operations, intoken=None):
-        print "ADD CODE TO LOOP"
         # Re-write to use lower level GC operations, and record
         # any inlined GC refs to the CLT.
         gcrefs = clt.inlined_gcrefs
@@ -154,13 +153,13 @@ class AssemblerASMJS(object):
                 labeldescr = op.getdescr()
                 assert isinstance(labeldescr, TargetToken)
                 # Make the preceding operations into a block.
-                if i > start_op:
-                    print "  BLOCK", len(clt.compiled_blocks), operations[start_op:i]
-                    new_block = CompiledBlockASMJS(
-                      self, clt, len(clt.compiled_blocks), intoken, inputargs,
-                      operations[start_op:i], labeldescr, op.getarglist(),
-                    )
-                    clt.compiled_blocks.append(new_block)
+                # NB: if the first op is a label, this makes an empty block.
+                # That's OK for now; it might do some arg shuffling etc.
+                new_block = CompiledBlockASMJS(
+                  self, clt, len(clt.compiled_blocks), intoken, inputargs,
+                  operations[start_op:i], labeldescr, op.getarglist(),
+                )
+                clt.compiled_blocks.append(new_block)
                 # Tell the label about its eventual location in the clt.
                 labeldescr._asmjs_clt = clt
                 labeldescr._asmjs_funcid = clt.compiled_funcid
@@ -171,7 +170,6 @@ class AssemblerASMJS(object):
                 inputargs = op.getarglist()
         # Make the final block.
         if start_op < len(operations):
-            print "  BLOCK", len(clt.compiled_blocks), operations[start_op:]
             new_block = CompiledBlockASMJS(
               self, clt, len(clt.compiled_blocks), intoken, inputargs,
               operations[start_op:], None, [],
@@ -375,6 +373,10 @@ class CompiledBlockASMJS(object):
         self.outtoken = outtoken
         self.outputargs = outputargs
 
+        # Remember value of invalidation counter when this loop was created.
+        # If it goes above this value, then GUARD_NOT_INVALIDATED fails.
+        self.initial_invalidation_counter = clt.invalidation.counter
+
         # Calculate the locations at which our input args will appear
         # on the frame.  In the process, count how many variables of
         # each time we will need when loading them.  Also track which
@@ -421,13 +423,13 @@ class CompiledBlockASMJS(object):
         self.has_been_compiled = False
 
         # Ensure the block ends with an explicit jump.
-        last_op = operations[-1]
-        if last_op.getopnum() == rop.JUMP:
-            self.outtoken = last_op.getdescr()
-            self.outputargs = last_op.getarglist()
+        # This simplifies calculation of box longevity below.
+        if operations and operations[-1].getopnum()  == rop.JUMP:
+            self.outtoken = operations[-1].getdescr()
+            self.outputargs = operations[-1].getarglist()
         else:
-            last_op = ResOperation(rop.JUMP, outputargs, None, descr=outtoken)
-            operations.append(last_op)
+            jump = ResOperation(rop.JUMP, outputargs, None, descr=outtoken)
+            operations.append(jump)
 
         # Calculate the longevity of all internal boxes.
         # This will let us re-use js variables for multiple boxes.
@@ -465,10 +467,6 @@ class CompiledBlockASMJS(object):
         self.spilled_frame_offset = 0
         self.box_to_jsval = {}
         self.next_compiled_gcmap = 0
-        if self.has_been_compiled:
-            print "RECOMPILING BLOCK", self.label
-        else:
-            print "COMPILING BLOCK", self.label
 
     def teardown(self):
         self.bldr = None
@@ -478,10 +476,7 @@ class CompiledBlockASMJS(object):
         self.box_to_jsval = None
         self.next_compiled_gcmap = 0
         if not self.has_been_compiled:
-            print "BLOCK HAS BEEN COMPILED", self.label
             self.has_been_compiled = True
-        else:
-            print "BLOCK HAS BEEN RECOMPILED", self.label
 
     def _genop_load_input_args(self):
         self.bldr.emit_comment("LOAD INPUT ARGS FOR %d" % (self.label,))
@@ -557,15 +552,31 @@ class CompiledBlockASMJS(object):
         if jumpdescr is None:
             pass
         elif jumpdescr._asmjs_funcid == self.clt.compiled_funcid:
-            self.bldr.emit_comment("JUMP LOCAL %d" % (jumpdescr._asmjs_label,))
+            comment = "JUMP LOCAL [%d]"
+            comment %= (jumpdescr._asmjs_label,)
+            self.bldr.emit_comment(comment)
             self._genop_local_jump(jumpdescr._asmjs_label, self.outputargs)
         else:
-            self.bldr.emit_comment("JUMP TO ANOTHER LOOP")
+            comment = "JUMP TO ANOTHER LOOP [%d %d]"
+            comment %= (jumpdescr._asmjs_funcid, jumpdescr._asmjs_label)
+            self.bldr.emit_comment(comment)
+            if SANITYCHECK:
+                target_clt = jumpdescr._asmjs_clt
+                target_blk = target_clt.compiled_blocks[jumpdescr._asmjs_label]
+                assert len(self.outputargs) == len(target_blk.inputargs)
             self._genop_write_output_args(self.outputargs)
             self._genop_set_frame_next_call(js.jitFrame,
                                             jumpdescr._asmjs_funcid,
                                             jumpdescr._asmjs_label)
             self.bldr.emit_exit()
+        # It's now safe to free all but the input vars
+        # so they can be re-used by other blocks.
+        for box, jsval in self.box_to_jsval.iteritems():
+            if box not in self.inputargs and jsval != js.jitFrame:
+                if box.type == FLOAT:
+                    self.bldr.free_doublevar(jsval)
+                else:
+                    self.bldr.free_intvar(jsval)
 
     def _get_jsval(self, jitval):
         if isinstance(jitval, Box):
@@ -1166,7 +1177,9 @@ class CompiledBlockASMJS(object):
             # Use the execute-trampoline helper to execute it to completion.
             # This may produce a new frame object, capture it in a temp box.
             exeaddr = self.assembler.execute_trampoline_addr
-            funcid = descr.compiled_loop_token.compiled_funcid
+            target_clt = descr.compiled_loop_token
+            assert isinstance(target_clt, CompiledLoopTokenASMJS)
+            funcid = target_clt.compiled_funcid
             self._genop_set_frame_next_call(frame, funcid)
             resvar = self.bldr.allocate_intvar()
             with ctx_allow_gc(self):
@@ -1262,16 +1275,16 @@ class CompiledBlockASMJS(object):
 
     def _genop_local_jump(self, label, inputargs):
         target_block = self.clt.compiled_blocks[label]
-        assert len(target_block.inputargs) == len(inputargs)
+        assert len(target_block.inputargs) <= len(inputargs)
         # We're going to use a bunch of temporary variables to swap the
         # the new values of the variables into the old, so that we don't
         # mess with the state of any boxes that we might need for a future
         # assignment.
-        tempvars = [None] * len(inputargs)
-        outvars = [None] * len(inputargs)
+        tempvars = [None] * len(target_block.inputargs)
+        outvars = [None] * len(target_block.inputargs)
         num_int_vars = 0
         num_double_vars = 0
-        for i in range(len(inputargs)):
+        for i in range(len(target_block.inputargs)):
             box = inputargs[i]
             if box.type == FLOAT:
                 tempvars[i] = self.bldr.allocate_doublevar()
@@ -1286,8 +1299,13 @@ class CompiledBlockASMJS(object):
         if SANITYCHECK:
             assert num_int_vars == target_block.num_int_args
             assert num_double_vars == target_block.num_double_args
-        for i in range(len(inputargs)):
+        for i in range(len(target_block.inputargs)):
+            box = inputargs[i]
             self.bldr.emit_assignment(outvars[i], tempvars[i])
+            if box.type == FLOAT:
+                self.bldr.free_doublevar(tempvars[i])
+            else:
+                self.bldr.free_intvar(tempvars[i])
         if label != self.label:
             self.bldr.emit_assignment(self.assembler.label_var,
                                       js.ConstInt(label))
@@ -1394,7 +1412,7 @@ class CompiledBlockASMJS(object):
         invalidation = rffi.cast(lltype.Signed, self.clt.invalidation)
         cur_val = js.HeapData(js.Int32, js.Plus(js.ConstInt(invalidation),
                                                 js.ConstInt(offset)))
-        orig_val = js.ConstInt(self.clt.invalidation.counter)
+        orig_val = js.ConstInt(self.initial_invalidation_counter)
         test = js.NotEqual(cur_val, orig_val)
         self._genop_guard_failure(test, op)
 
@@ -1402,24 +1420,22 @@ class CompiledBlockASMJS(object):
         descr = op.getdescr()
         assert isinstance(descr, AbstractFailDescr)
         assert descr._asmjs_funcid == self.clt.compiled_funcid
+        failargs = op.getfailargs()
         with self.bldr.emit_if_block(test):
             self.bldr.emit_debug("GUARD FAILED %s" % (op,))
             self.bldr.emit_debug("  ARGS:", map(self._get_jsval, op.getarglist()))
-            self.bldr.emit_debug("  FAILARGS:", map(self._get_jsval, op.getfailargs()))
+            self.bldr.emit_debug("  FAILARGS:", map(self._get_jsval, failargs))
             # If the guard has been compiled into a bridge then
             # jump to that label.  Otherwise spill to frame and exit.
             if descr._asmjs_label != 0:
-                print "GUARD COMPILED", descr
-                # We would ordinarily of pushed a gcmap here, but now don't.
-                # Skip over it in the re-use queue.
-                # We can't free it because older versions of this loop
-                # might still be running.
                 if SANITYCHECK:
                     assert self.has_been_compiled
+                self._genop_local_jump(descr._asmjs_label, failargs)
+                # During initial compilation we would have pushed a gcmap here.
+                # We don't need it now, so skip over it.  Note that we can't
+                # free it in case older versions of the loop are still running.
                 self.next_compiled_gcmap += 1
-                self._genop_local_jump(descr._asmjs_label, op.getfailargs())
             else:
-                print "GUARD NOT COMPILED", descr
                 # If there might be an exception, capture it to the frame.
                 if self._guard_might_have_exception(op):
                     cpu = self.cpu
@@ -1433,7 +1449,6 @@ class CompiledBlockASMJS(object):
                         self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
                         self.bldr.emit_store(js.zero, pos_excval, js.Int32)
                 # Store the failargs into the frame.
-                failargs = op.getfailargs()
                 self.bldr.emit_comment("SPILL %d FAILARGS" % (len(failargs),))
                 locations = self._genop_write_output_args(failargs)
                 descr._asmjs_faillocs = locations

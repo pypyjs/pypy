@@ -1,4 +1,5 @@
 
+from rpython.rlib.objectmodel import we_are_translated
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.jit.metainterp.history import (ConstInt, ConstFloat, ConstPtr,
                                             TargetToken)
@@ -250,7 +251,10 @@ class ASMJSBuilder(object):
 
     def emit_debug(self, msg, values=None):
         if SANITYCHECK:
-            self.emit("log(\"%s\"" % (msg,))
+            if we_are_translated():
+                self.emit("print(\"%s\"" % (msg,))
+            else:
+                self.emit("log(\"%s\"" % (msg,))
             if values:
                 for i in xrange(len(values)):
                     self.emit(",")

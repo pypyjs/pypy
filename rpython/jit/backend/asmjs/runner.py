@@ -85,6 +85,8 @@ class CPU_ASMJS(AbstractLLCPU):
             frame = self.gc_ll_descr.malloc_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
             locs = clt._ll_initial_locs
+            if SANITYCHECK:
+                assert len(locs) == len(args)
             if not self.translate_support_code:
                 prev_interpreter = LLInterpreter.current_interpreter
                 LLInterpreter.current_interpreter = self.debug_ll_interpreter
