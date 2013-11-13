@@ -296,6 +296,8 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.dispatch(node.children[0])
         self.emit(":")
         self.indent()
+        self.emit("pass")
+        self.newline()
         self.dispatch(node.children[1])
         self.dedent()
 

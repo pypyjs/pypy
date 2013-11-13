@@ -427,11 +427,7 @@ class CompiledBlockASMJS(object):
 
         # Calculate the longevity of all internal boxes.
         # This will let us re-use js variables for multiple boxes.
-        # The argument boxes, however, must not be reused.
         self.longevity, _ = compute_vars_longevity(inputargs, operations)
-        FOREVER = len(operations) + 1
-        for argbox in inputargs:
-            self.longevity[argbox] = (0, FOREVER)
 
         # Remove the final jump.
         # It doesn't hold its descr after the initial compile, so we
@@ -493,23 +489,24 @@ class CompiledBlockASMJS(object):
             assert num_double_args == self.num_double_args
 
     def _genop_block_body(self):
-        self.bldr.emit_debug("ENTER BLOCK %d" % (self.label,))
-        self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in self.inputargs])
+        #self.bldr.emit_debug("ENTER BLOCK %d" % (self.label,))
+        #self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in self.inputargs])
         # Walk the list of operations, emitting code for each.
         # We expend some modest effort to generate "nice" javascript code,
         # by e.g. folding constant expressions and eliminating temp variables.
-        i = 0
-        while i < len(self.operations):
-            op = self.operations[i]
+        self.pos = 0
+        while self.pos < len(self.operations):
+            op = self.operations[self.pos]
+            step = 1
             # Can we omit the operation completely?
             if op.has_no_side_effect() and op.result not in self.longevity:
                 self.bldr.emit_comment("OMMITTED USELESS JIT OP: %s" % (op,))
             # Do we need to emit it in conjunction with a guard?
             elif self._op_needs_guard(op):
-                i += 1
                 if SANITYCHECK:
-                    assert i < len(self.operations)
-                guardop = self.operations[i]
+                    assert self.pos + 1 < len(self.operations)
+                step = 2
+                guardop = self.operations[self.pos + 1]
                 if SANITYCHECK:
                     assert guardop.is_guard()
                 self.bldr.emit_comment("BEGIN JIT OP: %s" % (op,))
@@ -524,7 +521,8 @@ class CompiledBlockASMJS(object):
             else:
                 self.bldr.emit_comment("BEGIN JIT EXPR OP: %s" % (op,))
                 expr = genop_expr_list[op.getopnum()](self, op)
-                if False and self._is_final_use(op.result, i + 1):
+                # XXX TODO: this causes test_caching_setfield to fail.
+                if False and self._is_final_use(op.result, self.pos + 1):
                     if SANITYCHECK:
                         assert op.result not in self.box_to_jsval
                     self.box_to_jsval[op.result] = expr
@@ -533,10 +531,11 @@ class CompiledBlockASMJS(object):
                     boxvar = self._get_jsval(op.result)
                     self.bldr.emit_assignment(boxvar, expr)
             # Free vars for boxes that are no longer needed.
+            # XXX TODO: need to free boxes from the guard, if any.
             for j in range(op.numargs()):
-                self._maybe_free_boxvar(op.getarg(j), i)
-            self._maybe_free_boxvar(op.result, i)
-            i += 1
+                self._maybe_free_boxvar(op.getarg(j))
+            self._maybe_free_boxvar(op.result)
+            self.pos += step
         # Generate the final jump, if any.
         # For jumps to local loop, we can send arguments via boxes.
         # For jumps to a different function, we spill to the frame.
@@ -562,15 +561,20 @@ class CompiledBlockASMJS(object):
                 self._genop_set_frame_next_call(js.jitFrame,
                                                 jumpdescr._asmjs_funcid,
                                                 jumpdescr._asmjs_label)
-            self.bldr.emit_exit()
+                self.bldr.emit_exit()
         # It's now safe to free all but the input vars
         # so they can be re-used by other blocks.
         for box, jsval in self.box_to_jsval.iteritems():
             if box not in self.inputargs and jsval != js.jitFrame:
-                if box.type == FLOAT:
+                if isinstance(jsval, js.DoubleVar):
                     self.bldr.free_doublevar(jsval)
-                else:
+                elif isinstance(jsval, js.IntVar):
                     self.bldr.free_intvar(jsval)
+        # Safety net to prevent infinite loop.
+        # Real code should never reach here, but tests generate some
+        # partial traces that don't have a proper FINISH or JUMP at end.
+        if SANITYCHECK:
+            self.bldr.emit_exit()
 
     def _get_jsval(self, jitval):
         if isinstance(jitval, Box):
@@ -593,18 +597,21 @@ class CompiledBlockASMJS(object):
             return False
         return self.longevity[box][1] == i
 
-    def _maybe_free_boxvar(self, box, i):
+    def _maybe_free_boxvar(self, box):
         if isinstance(box, Box):
-            if self._is_final_use(box, i) or box not in self.longevity:
+            if self._is_final_use(box, self.pos) or box not in self.longevity:
                 if SANITYCHECK:
-                    assert box not in self.inputargs
                     assert box not in self.outputargs
+                # Here we are happy to pop inputarg boxes from the dict,
+                # as it means we don't have to keep them alive.  But we
+                # must not free the underlying js variables.
                 boxvar = self.box_to_jsval.pop(box, None)
-                if boxvar is not None and boxvar != js.jitFrame:
-                    if isinstance(boxvar, js.IntVar):
-                        self.bldr.free_intvar(boxvar)
-                    elif isinstance(boxvar, js.DoubleVar):
-                        self.bldr.free_doublevar(boxvar)
+                if box not in self.inputargs:
+                    if boxvar is not None and boxvar != js.jitFrame:
+                        if isinstance(boxvar, js.IntVar):
+                            self.bldr.free_intvar(boxvar)
+                        elif isinstance(boxvar, js.DoubleVar):
+                            self.bldr.free_doublevar(boxvar)
 
     @staticmethod
     def _op_needs_guard(op):
@@ -1170,6 +1177,7 @@ class CompiledBlockASMJS(object):
             # The GC-rewrite pass has allocated a frame and populated it.
             # Use the execute-trampoline helper to execute it to completion.
             # This may produce a new frame object, capture it in a temp box.
+            # XXX TODO: does it push a gcmap? does it need to?
             exeaddr = self.assembler.execute_trampoline_addr
             target_clt = descr.compiled_loop_token
             assert isinstance(target_clt, CompiledLoopTokenASMJS)
@@ -1416,9 +1424,9 @@ class CompiledBlockASMJS(object):
         assert descr._asmjs_funcid == self.clt.compiled_funcid
         failargs = op.getfailargs()
         with self.bldr.emit_if_block(test):
-            self.bldr.emit_debug("GUARD FAILED %s" % (op,))
-            self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in op.getarglist()])
-            self.bldr.emit_debug("  FAILARGS:", [self._get_jsval(a) for a in failargs])
+            #self.bldr.emit_debug("GUARD FAILED %s" % (op,))
+            #self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in op.getarglist()])
+            #self.bldr.emit_debug("  FAILARGS:", [self._get_jsval(a) for a in failargs])
             # If the guard has been compiled into a bridge then
             # jump to that label.  Otherwise spill to frame and exit.
             if descr._asmjs_label != 0:
@@ -1699,7 +1707,7 @@ class CompiledBlockASMJS(object):
                     byte_mask = js.LShift(js.ConstInt(1),
                                           js.And(byte_index, js.ConstInt(7)))
                     byte_addr = js.Plus(obj, byte_ofs)
-                    self.bldr.emit_debug("  CARD-MARKING IN USE", [byte_ofs])
+                    #self.bldr.emit_debug("  CARD-MARKING IN USE", [byte_ofs])
                     old_byte_data = js.HeapData(js.Int8, byte_addr)
                     new_byte_data = js.Or(old_byte_data, byte_mask)
                     self.bldr.emit_store(new_byte_data, byte_addr, js.Int8)
@@ -1882,6 +1890,8 @@ class ctx_allow_gc(ctx_spill_to_frame):
             if self.exclude is not None and box in self.exclude:
                 continue
             if jsval == js.jitFrame:
+                continue
+            if self.block._is_final_use(box, self.block.pos):
                 continue
             if not self.is_spilled(box):
                 self.genop_spill_to_frame(box)

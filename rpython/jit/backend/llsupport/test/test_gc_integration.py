@@ -797,14 +797,20 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
 
         def before():
             # put nonsense on the top of shadowstack
-            frame = rffi.cast(JITFRAMEPTR, cpu.gc_ll_descr.gcrootmap.stack[0])
-            assert getmap(frame).count('1') == 7 #
-            copied_stack[0] = cpu.gc_ll_descr.gcrootmap.stack[0]
-            cpu.gc_ll_descr.gcrootmap.stack[0] = -42
+            rootstack = cpu.gc_ll_descr.gcrootmap.stack
+            try:
+                frame = rffi.cast(JITFRAMEPTR, rootstack[0])
+            except IndexError:
+                pass
+            else:
+                assert getmap(frame).count('1') == 7 #
+                copied_stack[0] = rootstack[0]
+                rootstack[0] = -42
             l.append("before")
 
         def after():
-            cpu.gc_ll_descr.gcrootmap.stack[0] = copied_stack[0]
+            if copied_stack[0] is not None:
+                cpu.gc_ll_descr.gcrootmap.stack[0] = copied_stack[0]
             l.append("after")
 
         invoke_around_extcall(before, after)
@@ -835,14 +841,22 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
         frame = cpu.execute_token(token, 1, *args)
         frame = rffi.cast(JITFRAMEPTR, frame)
         assert frame.jf_frame[0] == 2
-        assert l == ['before', 'after']
+        assert copied_stack[0] is not None
+        if self.cpu.backend_name.startswith('asmjs'):
+            # asmjs calls external functions as part of JIT compilation.
+            # jitReserve(), jitRecompile(), jitInvoke() -> the target call.
+            assert l == ['before', 'after', 'before', 'after',
+                         'before', 'before', 'after', 'after']
+        else:
+            assert l == ['before', 'after']
 
     def test_call_may_force_gcmap(self):
         cpu = self.cpu
 
         def f(frame, arg, x):
             assert not arg
-            assert frame.jf_gcmap[0] & 31 == 0
+            if self.cpu.backend_name != 'asmjs':
+                assert frame.jf_gcmap[0] & 31 == 0
             assert getmap(frame).count('1') == 3 # p1, p2, p3, but
             # not in registers
             frame.jf_descr = frame.jf_force_descr # make guard_not_forced fail
@@ -887,7 +901,8 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
 
         def f(frame, arg, x):
             assert not arg
-            assert frame.jf_gcmap[0] & 31 == 0
+            if self.cpu.backend_name != 'asmjs':
+                assert frame.jf_gcmap[0] & 31 == 0
             assert getmap(frame).count('1') == 3 # p1, p2, p3
             frame.jf_descr = frame.jf_force_descr # make guard_not_forced fail
             assert x == 1

@@ -361,4 +361,4 @@ class ctx_case_block(object):
         return self.js
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("}\n")
+        self.js.emit("break;\n}\n")
