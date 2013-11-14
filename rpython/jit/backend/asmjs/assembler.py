@@ -650,6 +650,8 @@ class CompiledBlockASMJS(object):
             return False
         if op.getopnum() == rop.INT_FORCE_GE_ZERO:
             return False
+        if op.getopnum() == rop.INT_MOD:
+            return False
         if op.getopnum() == rop.FLOAT_ABS:
             return False
         if op.result.type == FLOAT:
@@ -964,13 +966,30 @@ class CompiledBlockASMJS(object):
     genop_expr_int_sub = _genop_expr_int_binop(js.Minus)
     genop_expr_int_mul = _genop_expr_int_binop(js.IMul)
     genop_expr_int_floordiv = _genop_expr_int_binop(js.Div)
-    genop_expr_int_mod = _genop_expr_int_binop(js.Mod)
     genop_expr_int_and = _genop_expr_int_binop(js.And)
     genop_expr_int_or = _genop_expr_int_binop(js.Or)
     genop_expr_int_xor = _genop_expr_int_binop(js.Xor)
     genop_expr_int_lshift = _genop_expr_int_binop(js.LShift)
     genop_expr_int_rshift = _genop_expr_int_binop(js.RShift)
     genop_expr_uint_rshift = _genop_expr_int_binop(js.URShift)
+
+    def genop_int_mod(self, op):
+        # In python, result of mod has same sign as RHS.
+        # In javascript, result of mod has same sign as LHS.
+        # XXX TODO: non-branching form for this?
+        lhs = self._get_jsval(op.getarg(0))
+        rhs = self._get_jsval(op.getarg(1))
+        res = self._get_jsval(op.result)
+        with self.bldr.emit_if_block(js.GreaterThanEq(lhs, js.zero)):
+            with self.bldr.emit_if_block(js.GreaterThanEq(rhs, js.zero)):
+                self.bldr.emit_assignment(res, js.Mod(lhs, rhs))
+            with self.bldr.emit_else_block():
+                self.bldr.emit_assignment(res, js.Minus(js.Mod(lhs, rhs), rhs))
+        with self.bldr.emit_else_block():
+            with self.bldr.emit_if_block(js.GreaterThanEq(rhs, js.zero)):
+                self.bldr.emit_assignment(res, js.Plus(js.Mod(lhs, rhs), rhs))
+            with self.bldr.emit_else_block():
+                self.bldr.emit_assignment(res, js.Mod(lhs, rhs))
 
     def _genop_expr_uint_binop(binop):
         def genop_expr_uint_binop(self, op):
