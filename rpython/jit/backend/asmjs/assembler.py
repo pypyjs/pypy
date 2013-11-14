@@ -943,8 +943,8 @@ class CompiledBlockASMJS(object):
 
     genop_expr_int_is_true = _genop_expr_int_unaryop(js.SignedCast)
     genop_expr_int_is_zero = _genop_expr_int_unaryop(js.UNot)
-    genop_expr_int_neg = _genop_expr_int_unaryop(js.UNeg)
-    genop_expr_int_invert = _genop_expr_int_unaryop(js.UNot)
+    genop_expr_int_neg = _genop_expr_int_unaryop(js.UMinus)
+    genop_expr_int_invert = _genop_expr_int_unaryop(js.UNeg)
 
     def _genop_expr_int_binop(binop):
         def genop_expr_int_binop(self, op):
