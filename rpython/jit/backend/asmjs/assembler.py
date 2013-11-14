@@ -753,7 +753,7 @@ class CompiledBlockASMJS(object):
         basesize, itemsize, len_offset = arraytoken
         assert itemsize == 1
         itemoffset = js.Plus(js.ConstInt(basesize), offset)
-        return js.HeapData(js.Int8, js.Plus(base, itemoffset))
+        return js.HeapData(js.UInt8, js.Plus(base, itemoffset))
 
     def genop_strsetitem(self, op):
         base = self._get_jsval(op.getarg(0))
@@ -764,7 +764,7 @@ class CompiledBlockASMJS(object):
         basesize, itemsize, len_offset = arraytoken
         assert itemsize == 1
         itemoffset = js.Plus(js.ConstInt(basesize), offset)
-        self.bldr.emit_store(value, js.Plus(base, itemoffset), js.Int8)
+        self.bldr.emit_store(value, js.Plus(base, itemoffset), js.UInt8)
 
     def genop_expr_strlen(self, op):
         base = self._get_jsval(op.getarg(0))
