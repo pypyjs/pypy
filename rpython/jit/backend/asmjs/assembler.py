@@ -498,8 +498,11 @@ class CompiledBlockASMJS(object):
         while self.pos < len(self.operations):
             op = self.operations[self.pos]
             step = 1
+            # Is it one of the special test-only opcodes?
+            if not we_are_translated() and op.getopnum() == -124:
+                self.genop_force_spill(op)
             # Can we omit the operation completely?
-            if op.has_no_side_effect() and op.result not in self.longevity:
+            elif op.has_no_side_effect() and op.result not in self.longevity:
                 self.bldr.emit_comment("OMMITTED USELESS JIT OP: %s" % (op,))
             # Do we need to emit it in conjunction with a guard?
             elif self._op_needs_guard(op):
@@ -675,10 +678,11 @@ class CompiledBlockASMJS(object):
     def _genop_get_frame_next_call(self, resvar, frame):
         return self.assembler._genop_get_frame_next_call(resvar, frame)
 
-    def _genop_write_output_args(self, outputargs):
-        locations = self._get_frame_locations(outputargs)
+    def _genop_write_output_args(self, outputargs, locations=None):
+        if locations is None:
+            locations = self._get_frame_locations(outputargs)
         assert len(outputargs) == len(locations)
-        with ctx_spill_to_frame(self) as f:
+        with ctx_spill_to_frame(self):
             for i in xrange(len(outputargs)):
                 box = outputargs[i]
                 offset = locations[i]
@@ -687,14 +691,15 @@ class CompiledBlockASMJS(object):
                     if SANITYCHECK:
                         assert curval == box
                 else:
-                    f.genop_spill_to_frame(box, offset)
+                    self._genop_spill_to_frame(box, offset)
             self._genop_store_gcmap()
         return locations
 
-    def _get_frame_locations(self, arguments):
+    def _get_frame_locations(self, arguments, offset=-1):
         """Allocate locations in the frame for all the given arguments."""
         locations = [-1] * len(arguments)
-        offset = 0
+        if offset < 0:
+            offset = self.spilled_frame_offset
         for i in xrange(len(arguments)):
             box = arguments[i]
             typ = js.HeapType.from_box(box)
@@ -705,6 +710,31 @@ class CompiledBlockASMJS(object):
             offset += typ.size
         self.clt.ensure_frame_depth(offset)
         return locations
+
+    def _genop_spill_to_frame(self, box, offset=-1):
+        typ = js.HeapType.from_box(box)
+        # Allocate it a position at the next available offset.
+        # Align each value to a multiple of its size.
+        if offset == -1:
+            offset = self.spilled_frame_offset
+            alignment = offset % typ.size
+            if alignment:
+                offset += typ.size - alignment
+        if offset + typ.size > self.spilled_frame_offset:
+            self.spilled_frame_offset = offset + typ.size
+        # Generate code to write the value into the frame.
+        addr = js.JitFrameSlotAddr(offset)
+        if isinstance(box, Box):
+            boxexpr = self._genop_realize_box(box)
+        else:
+            boxexpr = self._get_jsval(box)
+        self.bldr.emit_store(boxexpr, addr, typ)
+        # Record where we spilled it.
+        if box not in self.spilled_frame_locations:
+            self.spilled_frame_locations[box] = []
+        self.spilled_frame_locations[box].append(offset)
+        self.spilled_frame_values[offset] = box
+        return offset
 
     #
     #  Code-Generating dispatch methods.
@@ -1418,7 +1448,7 @@ class CompiledBlockASMJS(object):
         test = js.NotEqual(cur_val, orig_val)
         self._genop_guard_failure(test, op)
 
-    def _genop_guard_failure(self, test, op):
+    def _genop_guard_failure(self, test, op, faillocs=None):
         descr = op.getdescr()
         assert isinstance(descr, AbstractFailDescr)
         assert descr._asmjs_funcid == self.clt.compiled_funcid
@@ -1452,8 +1482,10 @@ class CompiledBlockASMJS(object):
                         self.bldr.emit_store(js.zero, pos_excval, js.Int32)
                 # Store the failargs into the frame.
                 self.bldr.emit_comment("SPILL %d FAILARGS" % (len(failargs),))
-                locations = self._genop_write_output_args(failargs)
-                descr._asmjs_faillocs = locations
+                if faillocs is None:
+                    faillocs = self._get_frame_locations(failargs)
+                self._genop_write_output_args(failargs, faillocs)
+                descr._asmjs_faillocs = faillocs
                 # Write the fail_descr into the frame.
                 fail_descr = cast_instance_to_gcref(descr)
                 addr = js.JitFrameDescrAddr()
@@ -1753,7 +1785,9 @@ class CompiledBlockASMJS(object):
         pass
 
     def genop_force_spill(self, op):
-        raise NotImplementedError
+        # This is used by tests.
+        # The item will stay spilled to the frame forever.
+        self._genop_spill_to_frame(op.getarg(0))
 
     def not_implemented_op_withguard(self, op, guardop):
         self.not_implemented_op(op)
@@ -1810,35 +1844,14 @@ class ctx_spill_to_frame(object):
             return True
 
     def genop_spill_to_frame(self, box, offset=-1):
-        typ = js.HeapType.from_box(box)
-        # Allocate it a position at the next available offset.
-        # Align each value to a multiple of its size.
-        if offset == -1:
-            offset = self.block.spilled_frame_offset
-            alignment = offset % typ.size
-            if alignment:
-                offset += typ.size - alignment
-        if offset + typ.size > self.block.spilled_frame_offset:
-            self.block.spilled_frame_offset = offset + typ.size
-        # Generate code to write the value into the frame.
-        addr = js.JitFrameSlotAddr(offset)
-        if isinstance(box, Box):
-            boxexpr = self.block._genop_realize_box(box)
-        else:
-            boxexpr = self._get_jsval(box)
-        self.block.bldr.emit_store(boxexpr, addr, typ)
-        # Record where we spilled it.
-        if box not in self.block.spilled_frame_locations:
-            self.block.spilled_frame_locations[box] = []
-        self.block.spilled_frame_locations[box].append(offset)
-        self.block.spilled_frame_values[offset] = box
-        return offset
+        self.block._genop_spill_to_frame(box, offset)
 
 
 class ctx_guard_not_forced(ctx_spill_to_frame):
 
     def __init__(self, block, guardop):
         ctx_spill_to_frame.__init__(self, block)
+        self.faillocs = None
         self.guardop = guardop
 
     def __enter__(self):
@@ -1854,14 +1867,14 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
         # They must be spilled at their final output location.
         assert self.orig_spilled_frame_offset == 0
         failargs = self.guardop.getfailargs()
-        locations = self.block._get_frame_locations(failargs)
-        assert len(failargs) == len(locations)
+        self.faillocs = self.block._get_frame_locations(failargs)
+        assert len(failargs) == len(self.faillocs)
         for i in xrange(len(failargs)):
             failarg = failargs[i]
             # Careful, some boxes may not have a value yet.
             if failarg and failarg not in self.block.box_to_jsval:
                 continue
-            self.genop_spill_to_frame(failarg, locations[i])
+            self.genop_spill_to_frame(failarg, self.faillocs[i])
         self.block._genop_store_gcmap()
         return self
 
@@ -1869,7 +1882,8 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
         # Emit the guard check, testing for whether jf_descr has been set.
         descr = js.HeapData(js.Int32, js.JitFrameDescrAddr())
         test = js.NotEqual(descr, js.zero)
-        self.block._genop_guard_failure(test, self.guardop)
+        self.block._genop_guard_failure(test, self.guardop, self.faillocs)
+        self.faillocs = None
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
 
