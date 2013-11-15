@@ -6,9 +6,3 @@ class TestShadowStack(CompileFrameworkTests):
     compile_kwds.update({"platform": "emscripten", "backend": "js"})
     gcrootfinder = "shadowstack"
 
-#    def test_compile_framework_8(self):
-#        py.test.xfail("wtf?")
-
-#    def test_compile_framework_external_exception_handling(self):
-#        py.test.xfail("wtf?")
-

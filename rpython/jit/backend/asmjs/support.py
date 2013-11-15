@@ -13,6 +13,7 @@ can be tested.  It is very slow and depends on the generated asmjs code being
 
 """
 
+import sys
 import ctypes
 import struct
 import subprocess
@@ -99,7 +100,7 @@ def jitFree(funcid):
 
 def load_asmjs(jssource, stdlib=None, foreign=None, heap=None):
     """Load asmjs source code as an equivalent python function."""
-    #validate_asmjs(jssource)
+    validate_asmjs(jssource)
     func = compile_asmjs(jssource)
     if heap is None:
         heap = NativeHeap()
@@ -116,6 +117,7 @@ def compile_asmjs(jssource):
     visitor = CompileASMJSVisitor()
     visitor.dispatch(ast)
     pysource = visitor.getpysource()
+    print>>sys.stderr, pysource
     ns = {}
     pycode = compile(pysource, "<pyasmjs>", "exec")
     exec pycode in globals(), ns
@@ -169,6 +171,13 @@ def NUM(v):
 
 def log(*args):
     print " ".join(map(str, args))
+
+
+def jsmod(lhs, rhs):
+    # The modulo operator in javascript takes the sign of the numerator.
+    # The modulo operator in python takes the sign o the denominator.
+    sign = 1 if lhs >= 0 else -1
+    return sign * (abs(lhs) % abs(rhs))
 
 
 class CompileASMJSVisitor(RPythonVisitor):
@@ -488,9 +497,9 @@ class CompileASMJSVisitor(RPythonVisitor):
 
     def visit_expr_modulo(self, node):
         lhs, rhs = node.children
-        self.emit("(")
+        self.emit("jsmod(")
         self.dispatch(lhs)
-        self.emit(") % (")
+        self.emit(", ")
         self.dispatch(rhs)
         self.emit(")")
 

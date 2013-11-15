@@ -409,13 +409,13 @@ class IMul(ASMJSBinaryOp):
         # For small constant RHS, we can emit normal multiplication.
         # For other arguments we must use Math.imul helper.
         if isinstance(self.rhs, ConstInt):
-            ASMJSBinaryOp.emit_value(self, js)
-        else:
-            js.emit("imul(")
-            js.emit_value(self.lhs)
-            js.emit(",")
-            js.emit_value(self.rhs)
-            js.emit(")|0")
+            if -2**20 < self.rhs.getint() < 2**20:
+                return ASMJSBinaryOp.emit_value(self, js)
+        js.emit("imul(")
+        js.emit_value(self.lhs)
+        js.emit(",")
+        js.emit_value(self.rhs)
+        js.emit(")|0")
 
 
 class _Divish(ASMJSBinaryOp):

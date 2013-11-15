@@ -300,6 +300,9 @@ class AssemblerASMJS(object):
 
         # Compile the replacement source code for our function.
         jssrc = self.bldr.finish()
+        os.write(2, "-=-=-=-= REASSEMBLED LOOP =-=-=-=-\n")
+        for block in clt.compiled_blocks:
+            os.write(2, "%s\n" % (block.operations,))
         os.write(2, "-=-=-=-= COMPILING ASMJS FOR %d =-=-=-=-\n" % (clt.compiled_funcid,))
         os.write(2, jssrc)
         os.write(2, "\n-=-=-=-=-=-=-=-=-\n")
@@ -650,8 +653,6 @@ class CompiledBlockASMJS(object):
             return False
         if op.getopnum() == rop.INT_FORCE_GE_ZERO:
             return False
-        if op.getopnum() == rop.INT_MOD:
-            return False
         if op.getopnum() == rop.FLOAT_ABS:
             return False
         if op.result.type == FLOAT:
@@ -973,23 +974,12 @@ class CompiledBlockASMJS(object):
     genop_expr_int_rshift = _genop_expr_int_binop(js.RShift)
     genop_expr_uint_rshift = _genop_expr_int_binop(js.URShift)
 
-    def genop_int_mod(self, op):
+    def genop_expr_int_mod(self, op):
         # In python, result of mod has same sign as RHS.
         # In javascript, result of mod has same sign as LHS.
-        # XXX TODO: non-branching form for this?
         lhs = self._get_jsval(op.getarg(0))
         rhs = self._get_jsval(op.getarg(1))
-        res = self._get_jsval(op.result)
-        with self.bldr.emit_if_block(js.GreaterThanEq(lhs, js.zero)):
-            with self.bldr.emit_if_block(js.GreaterThanEq(rhs, js.zero)):
-                self.bldr.emit_assignment(res, js.Mod(lhs, rhs))
-            with self.bldr.emit_else_block():
-                self.bldr.emit_assignment(res, js.Minus(js.Mod(lhs, rhs), rhs))
-        with self.bldr.emit_else_block():
-            with self.bldr.emit_if_block(js.GreaterThanEq(rhs, js.zero)):
-                self.bldr.emit_assignment(res, js.Plus(js.Mod(lhs, rhs), rhs))
-            with self.bldr.emit_else_block():
-                self.bldr.emit_assignment(res, js.Mod(lhs, rhs))
+        return js.Mod(js.Plus(js.Mod(lhs, rhs), rhs), rhs)
 
     def _genop_expr_uint_binop(binop):
         def genop_expr_uint_binop(self, op):
