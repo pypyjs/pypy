@@ -616,58 +616,65 @@ class DynCallFunc(_CallFunc):
             self.jstype = Doublish
 
 
-jitFrame = IntVar("jitframe")
+frame = IntVar("frame")
 
 
-class _JitFrameFieldAddr(ASMJSValue):
-    """ASMJSValue representing the address of a field within the jitframe."""
+class _FrameFieldAddr(ASMJSValue):
+    """ASMJSValue representing the address of a field within the frame."""
 
     jstype = Intish
 
+    def __init__(self, framevar=None):
+        if framevar is None:
+            framevar = frame
+        self.framevar = framevar
+
     def emit_value(self, js):
-        js.emit("jitframe + %d" % (self.calculate_offset(js.cpu),))
+        addr = Plus(self.framevar, ConstInt(self.calculate_offset(js.cpu)))
+        addr.emit_value(js)
 
 
-class JitFrameSlotAddr(_JitFrameFieldAddr):
+class FrameSlotAddr(_FrameFieldAddr):
     """ASMJSValue representing the address of a slot in frame scratch-space."""
 
-    def __init__(self, offset):
+    def __init__(self, offset, framevar=None):
         self.offset = offset
+        _FrameFieldAddr.__init__(self, framevar)
 
     def calculate_offset(self, cpu):
         return cpu.get_baseofs_of_frame_field() + self.offset
 
 
-class JitFrameDescrAddr(_JitFrameFieldAddr):
-    """ASMJSValue representing the address of jitframe.jf_descr."""
+class FrameDescrAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame.jf_descr."""
 
     def calculate_offset(self, cpu):
         return cpu.get_ofs_of_frame_field("jf_descr")
 
 
-class JitFrameForceDescrAddr(_JitFrameFieldAddr):
-    """ASMJSValue representing the address of jitframe.jf_force_descr."""
+class FrameForceDescrAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame.jf_force_descr."""
 
     def calculate_offset(self, cpu):
         return cpu.get_ofs_of_frame_field("jf_force_descr")
 
 
-class JitFrameGuardExcAddr(_JitFrameFieldAddr):
-    """ASMJSValue representing the address of jitframe.jf_guard_exc."""
+class FrameGuardExcAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame.jf_guard_exc."""
 
     def calculate_offset(self, cpu):
         return cpu.get_ofs_of_frame_field("jf_guard_exc")
 
 
-class JitFrameGCMapAddr(_JitFrameFieldAddr):
-    """ASMJSValue representing the address of jitframe.jf_gcmap."""
+class FrameGCMapAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame.jf_gcmap."""
 
     def calculate_offset(self, cpu):
         return cpu.get_ofs_of_frame_field("jf_gcmap")
 
 
-class JitFrameSizeAddr(_JitFrameFieldAddr):
-    """ASMJSValue representing the address of jitframe size field."""
+class FrameSizeAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame size field."""
 
     def calculate_offset(self, cpu):
         descrs = cpu.gc_ll_descr.getframedescrs(cpu)

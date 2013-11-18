@@ -62,7 +62,7 @@ class CPU_ASMJS(AbstractLLCPU):
         helper function "jitInvoke" to execute the compiled function.
 
         The compiled code will return the frame object with jf_force_descr set
-        to indicate control flow.  If zero then it's dne and we can find the
+        to indicate control flow.  If zero then it's done and we can find the
         results in the frame; if nonzero then it indicates another compiled
         function that should be invoked.  We loop until it gets set to zero,
         providing a simple and inefficient simulation of GOTOs between the

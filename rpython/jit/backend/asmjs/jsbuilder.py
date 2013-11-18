@@ -44,8 +44,8 @@ class ASMJSBuilder(object):
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
-        chunks.append('function F(jitframe){\n')
-        chunks.append('jitframe=jitframe|0;\n')
+        chunks.append('function F(frame){\n')
+        chunks.append('frame=frame|0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
@@ -55,8 +55,8 @@ class ASMJSBuilder(object):
 
     def _build_epilog(self):
         chunks = []
-        # The compiled function always returns jitframe when it's finished.
-        chunks.append('return jitframe|0;\n')
+        # The compiled function always returns frame when it's finished.
+        chunks.append('return frame|0;\n')
         chunks.append('}\n')
         # Export the singleton compiled function.
         chunks.append('return F;\n')
@@ -243,7 +243,7 @@ class ASMJSBuilder(object):
 
     def emit_exit(self):
         """Emit an immediate return from the function."""
-        self.emit("return jitframe|0;\n")
+        self.emit("return frame|0;\n")
 
     def emit_comment(self, msg):
         if SANITYCHECK:

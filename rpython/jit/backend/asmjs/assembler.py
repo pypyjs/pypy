@@ -228,12 +228,13 @@ class AssemblerASMJS(object):
         # We initialize it with the low 8 bits of jf_force_descr,
         # which the trampoline uses to pass in the target label.
         # We clear jf_force_descr once it's loaded.
+        # XXX TODO: maybe just pass it in as a second arg to the function?
         self.label_var = self.bldr.allocate_intvar()
         self.bldr.emit_comment("LOAD INITIAL LABEL")
-        self._genop_get_frame_next_call(self.label_var, js.jitFrame)
+        self._genop_get_frame_next_call(self.label_var, js.frame)
         masked_label = js.And(self.label_var, js.ConstInt(0xFF))
         self.bldr.emit_assignment(self.label_var, masked_label)
-        self._genop_set_frame_next_call(js.jitFrame, 0, 0)
+        self._genop_set_frame_next_call(js.frame, 0, 0)
 
         # A suite of variables to hold the input args for the loop.
         # Every time we go to jump to a block, we populate a subset of these.
@@ -253,28 +254,28 @@ class AssemblerASMJS(object):
 
         # We check the depth of the frame at entry to the function.
         # If it's too small then we rellocate it via a helper.
-        cur_depth = js.HeapData(js.Int32, js.JitFrameSizeAddr())
+        cur_depth = js.HeapData(js.Int32, js.FrameSizeAddr())
         frame_too_small = js.LessThan(cur_depth, self.req_depth_var)
         self.bldr.emit_comment("CHECK FRAME DEPTH")
         with self.bldr.emit_if_block(frame_too_small):
             # We must store a gcmap to prevent input args from being gc'd.
             # The layout of input args depends on the target label.
-            gcmapaddr = js.JitFrameGCMapAddr()
+            gcmapaddr = js.FrameGCMapAddr()
             with self.bldr.emit_switch_block(self.label_var):
                 for block in clt.compiled_blocks:
                     with self.bldr.emit_case_block(js.ConstInt(block.label)):
                         gcmap = block.initial_gcmap
                         gcmapadr = self.cpu.cast_ptr_to_int(gcmap)
                         gcmapref = js.ConstInt(gcmapadr)
-                        addr = js.JitFrameGCMapAddr()
+                        addr = js.FrameGCMapAddr()
                         self.bldr.emit_store(gcmapref, gcmapaddr, js.Int32)
             # Now we can call the helper function.
             # There might be an exception active, which we want to preserve.
             reallocfn = js.ConstInt(self.cpu.realloc_frame)
-            args = [js.jitFrame, self.req_depth_var]
+            args = [js.frame, self.req_depth_var]
             with ctx_preserve_exception(self):
                 newframe = js.DynCallFunc("iii", reallocfn, args)
-                self.bldr.emit_assignment(js.jitFrame, newframe)
+                self.bldr.emit_assignment(js.frame, newframe)
         self.bldr.free_intvar(self.req_depth_var)
 
         # Load input args for the block being entered.
@@ -300,12 +301,7 @@ class AssemblerASMJS(object):
 
         # Compile the replacement source code for our function.
         jssrc = self.bldr.finish()
-        os.write(2, "-=-=-=-= REASSEMBLED LOOP =-=-=-=-\n")
-        for block in clt.compiled_blocks:
-            os.write(2, "%s\n" % (block.operations,))
-        os.write(2, "-=-=-=-= COMPILING ASMJS FOR %d =-=-=-=-\n" % (clt.compiled_funcid,))
         os.write(2, jssrc)
-        os.write(2, "\n-=-=-=-=-=-=-=-=-\n")
         support.jitRecompile(clt.compiled_funcid, jssrc)
 
     def _genop_set_frame_next_call(self, framevar, funcid, label=0):
@@ -314,18 +310,12 @@ class AssemblerASMJS(object):
         assert funcid < 2**24
         assert label < 0xFF
         next_call = (funcid << 8) | label
-        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
-        self.bldr.emit_store(js.ConstInt(next_call),
-                             js.Plus(framevar, js.ConstInt(offset)),
-                             js.UInt32)
+        addr = js.FrameForceDescrAddr(framevar)
+        self.bldr.emit_store(js.ConstInt(next_call), addr, js.UInt32)
 
     def _genop_get_frame_next_call(self, callvar, framevar):
-        # High 24 bits give the function id.
-        # Low 8 bits give the target label within that function.
-        offset = self.cpu.get_ofs_of_frame_field("jf_force_descr")
-        self.bldr.emit_load(callvar,
-                            js.Plus(framevar, js.ConstInt(offset)),
-                            js.UInt32)
+        addr = js.FrameForceDescrAddr(framevar)
+        self.bldr.emit_load(callvar, addr, js.UInt32)
 
 
 class CompiledLoopTokenASMJS(CompiledLoopToken):
@@ -485,7 +475,7 @@ class CompiledBlockASMJS(object):
                 num_int_args += 1
             pos = self.inputlocs[i]
             typ = js.HeapType.from_box(box)
-            self.bldr.emit_load(jsval, js.JitFrameSlotAddr(pos), typ)
+            self.bldr.emit_load(jsval, js.FrameSlotAddr(pos), typ)
             self.box_to_jsval[box] = jsval
         if SANITYCHECK:
             assert num_int_args == self.num_int_args
@@ -564,14 +554,14 @@ class CompiledBlockASMJS(object):
                     target_blk = target_clt.compiled_blocks[jumpdescr._asmjs_label]
                     assert len(self.outputargs) == len(target_blk.inputargs)
                 self._genop_write_output_args(self.outputargs)
-                self._genop_set_frame_next_call(js.jitFrame,
+                self._genop_set_frame_next_call(js.frame,
                                                 jumpdescr._asmjs_funcid,
                                                 jumpdescr._asmjs_label)
                 self.bldr.emit_exit()
         # It's now safe to free all but the input vars
         # so they can be re-used by other blocks.
         for box, jsval in self.box_to_jsval.iteritems():
-            if box not in self.inputargs and jsval != js.jitFrame:
+            if box not in self.inputargs and jsval != js.frame:
                 if isinstance(jsval, js.DoubleVar):
                     self.bldr.free_doublevar(jsval)
                 elif isinstance(jsval, js.IntVar):
@@ -613,7 +603,7 @@ class CompiledBlockASMJS(object):
                 # must not free the underlying js variables.
                 boxvar = self.box_to_jsval.pop(box, None)
                 if box not in self.inputargs:
-                    if boxvar is not None and boxvar != js.jitFrame:
+                    if boxvar is not None and boxvar != js.frame:
                         if isinstance(boxvar, js.IntVar):
                             self.bldr.free_intvar(boxvar)
                         elif isinstance(boxvar, js.DoubleVar):
@@ -726,7 +716,7 @@ class CompiledBlockASMJS(object):
         if offset + typ.size > self.spilled_frame_offset:
             self.spilled_frame_offset = offset + typ.size
         # Generate code to write the value into the frame.
-        addr = js.JitFrameSlotAddr(offset)
+        addr = js.FrameSlotAddr(offset)
         if isinstance(box, Box):
             boxexpr = self._genop_realize_box(box)
         else:
@@ -1119,10 +1109,10 @@ class CompiledBlockASMJS(object):
         # It needs to write into the heap, so we use the frame as scratch.
         os.write(2, "WARNING: genop_read_timestamp probably doesn't work\n")
         self.clt.ensure_frame_depth(2*WORD)
-        addr = js.JitFrameSlotAddr(0)
+        addr = js.FrameSlotAddr(0)
         self.bldr.emit_expr(js.CallFunc("gettimeofday", [addr]))
         secs = js.HeapData(js.Int32, addr)
-        micros = js.HeapData(js.Int32, js.JitFrameSlotAddr(WORD))
+        micros = js.HeapData(js.Int32, js.FrameSlotAddr(WORD))
         millis = js.Div(micros, js.ConstInt(1000))
         millis = js.Plus(millis, js.IMul(secs, js.ConstInt(1000)))
         self.bldr.emit_assignment(self._get_jsval(op.result), millis)
@@ -1229,9 +1219,8 @@ class CompiledBlockASMJS(object):
                 call = js.DynCallFunc("ii", js.ConstInt(exeaddr), [frame])
                 self.bldr.emit_assignment(resvar, call)
             # Load the descr resulting from that call.
-            offset = cpu.get_ofs_of_frame_field('jf_descr')
-            resdescr = js.HeapData(js.Int32,
-                                   js.Plus(resvar, js.ConstInt(offset)))
+            addr = js.FrameDescrAddr(resvar)
+            resdescr = js.HeapData(js.Int32, addr)
             # Check if it's equal to done-with-this-frame.
             # The particular brand of DWTF depends on the result type.
             if op.result is None:
@@ -1314,7 +1303,7 @@ class CompiledBlockASMJS(object):
 
     def genop_force_token(self, op):
         if op.result is not None:
-            self.box_to_jsval[op.result] = js.jitFrame
+            self.box_to_jsval[op.result] = js.frame
 
     def _genop_local_jump(self, label, inputargs):
         target_block = self.clt.compiled_blocks[label]
@@ -1361,9 +1350,9 @@ class CompiledBlockASMJS(object):
         # Write return value into the frame.
         self._genop_write_output_args(op.getarglist())
         # Write the descr into the frame slot.
-        addr = js.JitFrameDescrAddr()
+        addr = js.FrameDescrAddr()
         self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
-        self._genop_set_frame_next_call(js.jitFrame, 0)
+        self._genop_set_frame_next_call(js.frame, 0, 0)
         self.bldr.emit_exit()
 
     #
@@ -1487,7 +1476,7 @@ class CompiledBlockASMJS(object):
                     exctyp = js.HeapData(js.Int32, pos_exctyp)
                     excval = js.HeapData(js.Int32, pos_excval)
                     with self.bldr.emit_if_block(exctyp):
-                        addr = js.JitFrameGuardExcAddr()
+                        addr = js.FrameGuardExcAddr()
                         self.bldr.emit_store(excval, addr, js.Int32)
                         self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
                         self.bldr.emit_store(js.zero, pos_excval, js.Int32)
@@ -1499,10 +1488,10 @@ class CompiledBlockASMJS(object):
                 descr._asmjs_faillocs = faillocs
                 # Write the fail_descr into the frame.
                 fail_descr = cast_instance_to_gcref(descr)
-                addr = js.JitFrameDescrAddr()
+                addr = js.FrameDescrAddr()
                 self.bldr.emit_store(js.ConstPtr(fail_descr), addr, js.Int32)
                 # Bail back to the interpreter to deal with it.
-                self._genop_set_frame_next_call(js.jitFrame, 0, 0)
+                self._genop_set_frame_next_call(js.frame, 0, 0)
                 self.bldr.emit_exit()
 
     def _guard_might_have_exception(self, op):
@@ -1525,16 +1514,16 @@ class CompiledBlockASMJS(object):
         excval = js.HeapData(js.Int32, pos_excval)
         with self.bldr.emit_if_block(exctyp):
             # Store the exception on the frame, and clear it.
-            self.bldr.emit_store(excval, js.JitFrameGuardExcAddr(), js.Int32)
+            self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
             self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
             self.bldr.emit_store(js.zero, pos_excval, js.Int32)
             # Store the special propagate-exception descr on the frame.
             descr = cast_instance_to_gcref(cpu.propagate_exception_descr)
-            addr = js.JitFrameDescrAddr()
+            addr = js.FrameDescrAddr()
             self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
             # Bail back to the invoking code to deal with it.
             self._genop_store_gcmap()
-            self._genop_set_frame_next_call(js.jitFrame, 0)
+            self._genop_set_frame_next_call(js.frame, 0, 0)
             self.bldr.emit_exit()
 
     #
@@ -1579,7 +1568,7 @@ class CompiledBlockASMJS(object):
             mallocfn = rffi.cast(lltype.Signed, self.assembler.gc_malloc_nursery_addr)
             if hasattr(gc_ll_descr, 'passes_frame'):
                 callsig = "iii"
-                args = [sizevar, js.jitFrame]
+                args = [sizevar, js.frame]
             else:
                 callsig = "ii"
                 args = [sizevar]
@@ -1750,7 +1739,6 @@ class CompiledBlockASMJS(object):
                     byte_mask = js.LShift(js.ConstInt(1),
                                           js.And(byte_index, js.ConstInt(7)))
                     byte_addr = js.Plus(obj, byte_ofs)
-                    #self.bldr.emit_debug("  CARD-MARKING IN USE", [byte_ofs])
                     old_byte_data = js.HeapData(js.Int8, byte_addr)
                     new_byte_data = js.Or(old_byte_data, byte_mask)
                     self.bldr.emit_store(new_byte_data, byte_addr, js.Int8)
@@ -1780,11 +1768,11 @@ class CompiledBlockASMJS(object):
                 comment = comment + " %d" % (gcmap[i],)
         self.bldr.emit_comment(comment)
         gcmapref = js.ConstInt(self.cpu.cast_ptr_to_int(gcmap))
-        self.bldr.emit_store(gcmapref, js.JitFrameGCMapAddr(), js.Int32)
+        self.bldr.emit_store(gcmapref, js.FrameGCMapAddr(), js.Int32)
         # We might have just stored some young pointers into the frame.
         # Emit a write barrier just in case.
         if writebarrier:
-            self._genop_write_barrier([js.jitFrame])
+            self._genop_write_barrier([js.frame])
 
     def genop_debug_merge_point(self, op):
         pass
@@ -1871,7 +1859,7 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
         # Store the force-descr where forcing code can find it.
         descr = self.guardop.getdescr()
         faildescr = js.ConstPtr(cast_instance_to_gcref(descr))
-        bldr.emit_store(faildescr, js.JitFrameForceDescrAddr(), js.Int32)
+        bldr.emit_store(faildescr, js.FrameForceDescrAddr(), js.Int32)
         # Write the potential failargs into the frame.
         # We have to spill them here because the forcing logic might
         # need to read them out to populate the virtualizable.
@@ -1891,7 +1879,7 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
 
     def __exit__(self, exc_typ, exc_val, exc_tb):
         # Emit the guard check, testing for whether jf_descr has been set.
-        descr = js.HeapData(js.Int32, js.JitFrameDescrAddr())
+        descr = js.HeapData(js.Int32, js.FrameDescrAddr())
         test = js.NotEqual(descr, js.zero)
         self.block._genop_guard_failure(test, self.guardop, self.faillocs)
         self.faillocs = None
@@ -1914,7 +1902,7 @@ class ctx_allow_gc(ctx_spill_to_frame):
                 continue
             if self.exclude is not None and box in self.exclude:
                 continue
-            if jsval == js.jitFrame:
+            if jsval == js.frame:
                 continue
             if self.block._is_final_use(box, self.block.pos):
                 continue
@@ -1930,7 +1918,7 @@ class ctx_allow_gc(ctx_spill_to_frame):
         if gcrootmap and gcrootmap.is_shadow_stack:
             rstaddr = js.ConstInt(gcrootmap.get_root_stack_top_addr())
             rst = js.HeapData(js.Int32, rstaddr)
-            bldr.emit_store(js.jitFrame, rst, js.Int32)
+            bldr.emit_store(js.frame, rst, js.Int32)
             newrst = js.Plus(rst, js.word)
             bldr.emit_store(newrst, rstaddr, js.Int32)
         return self
@@ -1948,7 +1936,7 @@ class ctx_allow_gc(ctx_spill_to_frame):
             # For moving GCs, the address of the jitframe may have changed.
             # Read the possibly-updated address out of root-stack top.
             # NB: this instruction re-evaluates the HeapData expression in rst.
-            bldr.emit_assignment(js.jitFrame, js.HeapData(js.Int32, rst))
+            bldr.emit_assignment(js.frame, js.HeapData(js.Int32, rst))
         # Similarly, read potential new addresss of any spilled boxes.
         # XXX TODO: don't double-load boxes that appear multiple times.
         for pos, box in self.block.spilled_frame_values.iteritems():
@@ -1956,12 +1944,10 @@ class ctx_allow_gc(ctx_spill_to_frame):
                 continue
             if self.exclude is not None and box in self.exclude:
                 continue
-            addr = js.JitFrameSlotAddr(pos)
+            addr = js.FrameSlotAddr(pos)
             bldr.emit_load(self._get_jsval(box), addr, js.Int32)
         # It's now safe to pop from the frame as usual.
         ctx_spill_to_frame.__exit__(self, exc_typ, exc_val, exc_tb)
-        # XXX TODO x86 backend seems to put a wb here.  Why?
-        #self.block._genop_write_barrier([js.jitFrame])
 
     def _get_live_boxes_in_spill_order(self):
         # Some tests expect boxes to be spilled in order of use.
@@ -1990,16 +1976,16 @@ class ctx_preserve_exception(object):
         excval = js.HeapData(js.Int32, self.pos_excval)
         self.bldr.emit_assignment(self.var_exctyp, exctyp)
         with self.bldr.emit_if_block(self.var_exctyp):
-            self.bldr.emit_store(excval, js.JitFrameGuardExcAddr(), js.Int32)
+            self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
             self.bldr.emit_store(js.zero, self.pos_exctyp, js.Int32)
             self.bldr.emit_store(js.zero, self.pos_excval, js.Int32)
 
     def __exit__(self, exc_typ, exc_val, exc_tb):
-        excval = js.HeapData(js.Int32, js.JitFrameGuardExcAddr())
+        excval = js.HeapData(js.Int32, js.FrameGuardExcAddr())
         with self.bldr.emit_if_block(self.var_exctyp):
             self.bldr.emit_store(self.var_exctyp, self.pos_exctyp, js.Int32)
             self.bldr.emit_store(excval, self.pos_excval, js.Int32)
-            self.bldr.emit_store(js.zero, js.JitFrameGuardExcAddr(), js.Int32)
+            self.bldr.emit_store(js.zero, js.FrameGuardExcAddr(), js.Int32)
         self.bldr.free_intvar(self.var_exctyp)
 
 
