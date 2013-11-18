@@ -526,7 +526,8 @@ class CompileASMJSVisitor(RPythonVisitor):
     def visit_expr_call(self, node):
         self.dispatch(node.children[0])
         self.emit("(")
-        self.dispatch(node.children[1])
+        if len(node.children) > 1:
+            self.dispatch(node.children[1])
         self.emit(")")
 
     def visit_callargs(self, node):
@@ -828,7 +829,7 @@ expr_unot: ["!"] expr_term;
 
 expr_uneg: ["~"] expr_term;
 
-expr_call: expr_unit ["("] callargs [")"] | <expr_unit>;
+expr_call: expr_unit ["(" ")"] | expr_unit ["("] callargs [")"] | <expr_unit>;
 
 expr_unit: ["("] <expr> [")"] | <NUMBER> | <object_name> | <STRING>;
 
@@ -836,7 +837,7 @@ object_name: IDENTIFIER ["["] expr ["]"] | <dotted_name> | <IDENTIFIER>;
 
 dotted_name: IDENTIFIER (["."] IDENTIFIER)+;
 
-callargs: [""] | expr ([","] expr)*;
+callargs: expr ([","] expr)*;
 
 """
 
