@@ -99,15 +99,12 @@ var LibraryJIT = {
     return id
   },
 
-  // Replace one JIT-compiled function with another.
-  // This is a simple relinking-via-recompilation hook - to replace an existing
-  // JIT-compiled function with new code, just compile the new code to get a
-  // new function, then call jitReplace(oldId, newId).
+  // Copy a JIT-compiled function to another id.
   //
-  jitReplace: function(oldId, newId) {
-    oldId = oldId|0;
-    newId = newId|0;
-    Module._jitCompiledFunctions[oldId] = Module._jitCompiledFunctions[newId];
+  jitCopy: function(srcId, dstId) {
+    srcId = srcId|0;
+    dstId = dstId|0;
+    Module._jitCompiledFunctions[dstId] = Module._jitCompiledFunctions[srcId];
   },
 
   // Invoke a JIT-compiled function.

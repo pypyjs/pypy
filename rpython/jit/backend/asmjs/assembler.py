@@ -121,6 +121,15 @@ class AssemblerASMJS(object):
         self.reassemble(clt)
         self.teardown()
 
+    def redirect_call_assembler(self, oldlooptoken, newlooptoken):
+        oldCLT = oldlooptoken.compiled_loop_token
+        newCLT = newlooptoken.compiled_loop_token
+        oldCLT.redirected_to = newCLT.compiled_funcid
+        if newCLT.redirected_funcids is None:
+            newCLT.redirected_funcids = []
+        newCLT.redirected_funcids.append(oldCLT.compiled_funcid)
+        support.jitCopy(newCLT.compiled_funcid, oldCLT.compiled_funcid)
+
     def free_loop_and_bridges(self, compiled_loop_token):
         # All freeing is taken care of in the CLT destructor.
         pass
@@ -303,6 +312,9 @@ class AssemblerASMJS(object):
         jssrc = self.bldr.finish()
         os.write(2, jssrc)
         support.jitRecompile(clt.compiled_funcid, jssrc)
+        if clt.redirected_funcids is not None:
+            for dstid in clt.redirected_funcids:
+                support.jitCopy(clt.compiled_funcid, dstid)
 
     def _genop_set_frame_next_call(self, framevar, funcid, label=0):
         # High 24 bits give the function id.
@@ -325,6 +337,8 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         CompiledLoopToken.__init__(self, cpu, number)
         self.compiled_funcid = 0
         self.compiled_blocks = []
+        self.redirected_funcids = None
+        self.redirected_to = 0
         self.invalidation = lltype.malloc(INVALIDATION_COUNTER, flavor="raw")
         self.invalidation.counter = 0
         self.inlined_gcrefs = []
@@ -957,19 +971,13 @@ class CompiledBlockASMJS(object):
     genop_expr_int_sub = _genop_expr_int_binop(js.Minus)
     genop_expr_int_mul = _genop_expr_int_binop(js.IMul)
     genop_expr_int_floordiv = _genop_expr_int_binop(js.Div)
+    genop_expr_int_mod = _genop_expr_int_binop(js.Mod)
     genop_expr_int_and = _genop_expr_int_binop(js.And)
     genop_expr_int_or = _genop_expr_int_binop(js.Or)
     genop_expr_int_xor = _genop_expr_int_binop(js.Xor)
     genop_expr_int_lshift = _genop_expr_int_binop(js.LShift)
     genop_expr_int_rshift = _genop_expr_int_binop(js.RShift)
     genop_expr_uint_rshift = _genop_expr_int_binop(js.URShift)
-
-    def genop_expr_int_mod(self, op):
-        # In python, result of mod has same sign as RHS.
-        # In javascript, result of mod has same sign as LHS.
-        lhs = self._get_jsval(op.getarg(0))
-        rhs = self._get_jsval(op.getarg(1))
-        return js.Mod(js.Plus(js.Mod(lhs, rhs), rhs), rhs)
 
     def _genop_expr_uint_binop(binop):
         def genop_expr_uint_binop(self, op):
@@ -1307,7 +1315,7 @@ class CompiledBlockASMJS(object):
 
     def _genop_local_jump(self, label, inputargs):
         target_block = self.clt.compiled_blocks[label]
-        assert len(target_block.inputargs) <= len(inputargs)
+        assert len(target_block.inputargs) == len(inputargs)
         # We're going to use a bunch of temporary variables to swap the
         # the new values of the variables into the old, so that we don't
         # mess with the state of any boxes that we might need for a future
@@ -1316,7 +1324,7 @@ class CompiledBlockASMJS(object):
         outvars = [None] * len(target_block.inputargs)
         num_int_vars = 0
         num_double_vars = 0
-        for i in range(len(target_block.inputargs)):
+        for i in range(len(inputargs)):
             box = inputargs[i]
             if box.type == FLOAT:
                 tempvars[i] = self.bldr.allocate_doublevar()
@@ -1331,7 +1339,7 @@ class CompiledBlockASMJS(object):
         if SANITYCHECK:
             assert num_int_vars == target_block.num_int_args
             assert num_double_vars == target_block.num_double_args
-        for i in range(len(target_block.inputargs)):
+        for i in range(len(inputargs)):
             box = inputargs[i]
             self.bldr.emit_assignment(outvars[i], tempvars[i])
             if box.type == FLOAT:
@@ -1462,7 +1470,8 @@ class CompiledBlockASMJS(object):
             if descr._asmjs_label != 0:
                 if SANITYCHECK:
                     assert self.has_been_compiled
-                self._genop_local_jump(descr._asmjs_label, failargs)
+                outputargs = [arg for arg in failargs if arg is not None]
+                self._genop_local_jump(descr._asmjs_label, outputargs)
                 # During initial compilation we would have pushed a gcmap here.
                 # We don't need it now, so skip over it.  Note that we can't
                 # free it in case older versions of the loop are still running.

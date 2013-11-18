@@ -74,8 +74,8 @@ def jitRecompile(funcid, jssource):
 
 
 @jsexternal([rffi.INT, rffi.INT], lltype.Void)
-def jitReplace(oldfuncid, newfuncid):
-    _jitCompiledFunctions[oldfuncid] = _jitCompiledFunctions[newfuncid]
+def jitCopy(srcId, dstId):
+    _jitCompiledFunctions[dstId] = _jitCompiledFunctions[srcId]
 
 
 @jsexternal([rffi.INT, rffi.INT], rffi.INT)
@@ -117,7 +117,6 @@ def compile_asmjs(jssource):
     visitor = CompileASMJSVisitor()
     visitor.dispatch(ast)
     pysource = visitor.getpysource()
-    print>>sys.stderr, pysource
     ns = {}
     pycode = compile(pysource, "<pyasmjs>", "exec")
     exec pycode in globals(), ns
@@ -175,7 +174,8 @@ def log(*args):
 
 def jsmod(lhs, rhs):
     # The modulo operator in javascript takes the sign of the numerator.
-    # The modulo operator in python takes the sign o the denominator.
+    # The modulo operator in python takes the sign of the denominator.
+    # The below implements the former in terms of the later.
     sign = 1 if lhs >= 0 else -1
     return sign * (abs(lhs) % abs(rhs))
 

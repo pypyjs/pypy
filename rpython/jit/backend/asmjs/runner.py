@@ -172,10 +172,7 @@ class CPU_ASMJS(AbstractLLCPU):
     cast_ptr_to_int = staticmethod(cast_ptr_to_int)
 
     def redirect_call_assembler(self, oldlooptoken, newlooptoken):
-        old_func_id = oldlooptoken.compiled_loop_token.compiled_funcid
-        new_func_id = newlooptoken.compiled_loop_token.compiled_funcid
-        # XXX TODO: this wont work if the loop is subsequently recompiled.
-        support.jitReplace(old_func_id, new_func_id)
+        self.assembler.redirect_call_assembler(oldlooptoken, newlooptoken)
 
     def invalidate_loop(self, looptoken):
         self.assembler.invalidate_loop(looptoken)
