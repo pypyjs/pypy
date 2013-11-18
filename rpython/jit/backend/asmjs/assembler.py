@@ -1260,7 +1260,7 @@ class CompiledBlockASMJS(object):
                 if op.result is None:
                     callsig = "vii"
                 elif op.result.type == FLOAT:
-                    callsig = "fii"
+                    callsig = "dii"
                 else:
                     callsig = "iii"
                 args = [resvar, virtref]
@@ -1280,7 +1280,7 @@ class CompiledBlockASMJS(object):
         assert isinstance(descr, CallDescr)
         assert len(descr.arg_classes) == len(args)
         # Map CallDescr type tags into dynCall type tags.
-        sigmap = {"i": "i", "r": "i", "f": "f", "v": "v"}
+        sigmap = {"i": "i", "r": "i", "f": "d", "v": "v"}
         callsig = sigmap[descr.result_type]
         i = 0
         while i < len(args):

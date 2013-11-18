@@ -612,7 +612,7 @@ class DynCallFunc(_CallFunc):
         _CallFunc.__init__(self, funcname, arguments)
         if callsig[0] == "i":
             self.jstype = Intish
-        elif callsig[0] == "f":
+        elif callsig[0] == "d":
             self.jstype = Doublish
 
 

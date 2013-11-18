@@ -639,7 +639,7 @@ class FOREIGN(object):
     will be available to the JIT-compiled code as runtime
     """
 
-    TYPEMAP = { "v": None, "i": ctypes.c_int32, "f": ctypes.c_double}
+    TYPEMAP = { "v": None, "i": ctypes.c_int32, "d": ctypes.c_double}
 
     tempDoublePtr = tempDoublePtr
 
