@@ -139,9 +139,7 @@ class ASMJSBuilder(object):
             refval = (rffi.cast(lltype.Signed, val.getref_base()))
             self.emit(str(refval))
         elif isinstance(val, ConstFloat):
-            if SANITYCHECK:
-                assert "." in repr(val.getfloat())
-            self.emit(repr(val.getfloat()))
+            self.emit("%17g" % (val.getfloat(),))
         else:
             raise RuntimeError("Unknown js value type: %s" % (val,))
 

@@ -1319,15 +1319,24 @@ class CompiledBlockASMJS(object):
             if op.result is None:
                 self.bldr.emit_expr(call)
             else:
-                resvar = self._get_jsval(op.result)
-                self.bldr.emit_assignment(resvar, call)
-                # The ctypes testing setup deals in 32-bit integers.
-                # Trim the the result if it's a less-than-full-sized integer,
-                if not we_are_translated():
-                    if descr.result_type == "i" and descr.result_size < WORD:
-                        nbits = 8 * descr.result_size - 1
+                if descr.get_result_type() == "i":
+                    # Trim the result if it's a less-than-full-sized integer,
+                    result_size = descr.get_result_size()
+                    if result_size < WORD:
+                        nbits = 8 * result_size - 1
                         mask = js.ConstInt((2 << nbits) - 1)
-                        self.bldr.emit_assignment(resvar, js.And(resvar, mask))
+                        call = js.And(call, mask)
+                    # Cast result to appropriate signedness.
+                    if descr.is_result_signed():
+                        call = js.SignedCast(call)
+                    else:
+                        call = js.UnsignedCast(call)
+                self.bldr.emit_comment("CALL:")
+                self.bldr.emit_comment("  ARGS: %s" % (descr.arg_classes,))
+                self.bldr.emit_comment("  RES: %s" % (descr.get_result_type(),))
+                self.bldr.emit_comment("  SZ: %s" % (descr.get_result_size(),))
+                self.bldr.emit_comment("  SGN: %s" % (descr.is_result_signed(),))
+                self.bldr.emit_assignment(self._get_jsval(op.result), call)
 
     def genop_force_token(self, op):
         if op.result is not None:
@@ -1701,6 +1710,9 @@ class CompiledBlockASMJS(object):
             wbdescr = cpu.gc_ll_descr.write_barrier_descr
         if wbdescr is None:
             return
+        if we_are_translated():
+            cls = cpu.gc_ll_descr.has_write_barrier_class()
+            assert cls is not None and isinstance(wbdescr, cls)
         card_marking = False
         if array and wbdescr.jit_wb_cards_set != 0:
             assert (wbdescr.jit_wb_cards_set_byteofs ==
