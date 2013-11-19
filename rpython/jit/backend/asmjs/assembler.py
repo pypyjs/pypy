@@ -47,9 +47,19 @@ def reacquire_gil_shadowstack():
         after()
 
 
+# XXX TODO: this is workaround for my inability to get concrete descrs
+# of high-leveltypes.  I attach a low-level type to then and use descrs
+# off that.  It's pretty dumb.  How to do this better?
+
 INVALIDATION_COUNTER = lltype.Struct(
     "INVALIDATIONCOUNTER",
     ("counter", lltype.Signed)
+)
+
+
+GUARD_LABEL = lltype.GcStruct(
+    "COMPILEDGUARDLABEL",
+    ("label", lltype.Signed)
 )
 
 
@@ -101,6 +111,7 @@ class AssemblerASMJS(object):
     def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace."""
         clt = CompiledLoopTokenASMJS(self.cpu, looptoken.number)
+        rgc._make_sure_does_not_move(clt)
         looptoken.compiled_loop_token = clt
         self.setup(looptoken)
         clt.compiled_funcid = support.jitReserve()
@@ -118,7 +129,7 @@ class AssemblerASMJS(object):
         clt = self.current_clt
         assert faildescr._asmjs_funcid == clt.compiled_funcid
         label = self.add_code_to_loop(clt, inputargs, operations, faildescr)
-        faildescr._asmjs_label = label
+        faildescr._asmjs_glbl.label = label
         self.reassemble(clt)
         self.teardown()
 
@@ -156,7 +167,9 @@ class AssemblerASMJS(object):
                 assert isinstance(faildescr, AbstractFailDescr)
                 faildescr._asmjs_clt = clt
                 faildescr._asmjs_funcid = clt.compiled_funcid
-                faildescr._asmjs_label = 0
+                faildescr._asmjs_glbl = lltype.malloc(GUARD_LABEL, flavor="gc")
+                rgc._make_sure_does_not_move(faildescr._asmjs_glbl)
+                faildescr._asmjs_glbl.label = 0
             # Label descrs start a new block.
             # They need to be told the current funcid.
             elif op.getopnum() == rop.LABEL:
@@ -244,7 +257,7 @@ class AssemblerASMJS(object):
         self._genop_get_frame_next_call(self.label_var, js.frame)
         masked_label = js.And(self.label_var, js.ConstInt(0xFF))
         self.bldr.emit_assignment(self.label_var, masked_label)
-        self._genop_set_frame_next_call(js.frame, 0, 0)
+        self._genop_set_frame_next_call(js.frame, js.zero, js.zero)
 
         # A suite of variables to hold the input args for the loop.
         # Every time we go to jump to a block, we populate a subset of these.
@@ -317,14 +330,17 @@ class AssemblerASMJS(object):
             for dstid in clt.redirected_funcids:
                 support.jitCopy(clt.compiled_funcid, dstid)
 
-    def _genop_set_frame_next_call(self, framevar, funcid, label=0):
+    def _genop_set_frame_next_call(self, framevar, funcid, label):
         # High 24 bits give the function id.
         # Low 8 bits give the target label within that function.
-        assert funcid < 2**24
-        assert label < 0xFF
-        next_call = (funcid << 8) | label
+        if SANITYCHECK:
+            if isinstance(funcid, ConstInt):
+                assert funcid.getint() < 2**24
+            if isinstance(label, ConstInt):
+                assert label.getint() < 0xFF
+        next_call = js.Or(js.LShift(funcid, js.ConstInt(8)), label)
         addr = js.FrameForceDescrAddr(framevar)
-        self.bldr.emit_store(js.ConstInt(next_call), addr, js.UInt32)
+        self.bldr.emit_store(next_call, addr, js.UInt32)
 
     def _genop_get_frame_next_call(self, callvar, framevar):
         addr = js.FrameForceDescrAddr(framevar)
@@ -574,8 +590,8 @@ class CompiledBlockASMJS(object):
                     assert len(self.outputargs) == len(target_blk.inputargs)
                 self._genop_write_output_args(self.outputargs)
                 self._genop_set_frame_next_call(js.frame,
-                                                jumpdescr._asmjs_funcid,
-                                                jumpdescr._asmjs_label)
+                                          js.ConstInt(jumpdescr._asmjs_funcid),
+                                          js.ConstInt(jumpdescr._asmjs_label))
                 self.bldr.emit_exit()
         # It's now safe to free all but the input vars
         # so they can be re-used by other blocks.
@@ -684,7 +700,7 @@ class CompiledBlockASMJS(object):
         self.bldr.emit_assignment(boxvar, boxexpr)
         return boxvar
 
-    def _genop_set_frame_next_call(self, frame, funcid, label=0):
+    def _genop_set_frame_next_call(self, frame, funcid, label):
         return self.assembler._genop_set_frame_next_call(frame, funcid, label)
 
     def _genop_get_frame_next_call(self, resvar, frame):
@@ -1248,8 +1264,8 @@ class CompiledBlockASMJS(object):
             exeaddr = self.assembler.execute_trampoline_addr
             target_clt = descr.compiled_loop_token
             assert isinstance(target_clt, CompiledLoopTokenASMJS)
-            funcid = target_clt.compiled_funcid
-            self._genop_set_frame_next_call(frame, funcid)
+            funcid = js.ConstInt(target_clt.compiled_funcid)
+            self._genop_set_frame_next_call(frame, funcid, js.zero)
             resvar = self.bldr.allocate_intvar()
             with ctx_allow_gc(self):
                 call = js.DynCallFunc("ii", js.ConstInt(exeaddr), [frame])
@@ -1403,7 +1419,7 @@ class CompiledBlockASMJS(object):
         # Write the descr into the frame slot.
         addr = js.FrameDescrAddr()
         self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
-        self._genop_set_frame_next_call(js.frame, 0, 0)
+        self._genop_set_frame_next_call(js.frame, js.zero, js.zero)
         self.bldr.emit_exit()
 
     #
@@ -1501,6 +1517,7 @@ class CompiledBlockASMJS(object):
 
     def _genop_guard_failure(self, test, op, faillocs=None):
         descr = op.getdescr()
+        rgc._make_sure_does_not_move(descr)
         assert isinstance(descr, AbstractFailDescr)
         assert descr._asmjs_funcid == self.clt.compiled_funcid
         failargs = op.getfailargs()
@@ -1508,18 +1525,45 @@ class CompiledBlockASMJS(object):
             #self.bldr.emit_debug("GUARD FAILED %s" % (op,))
             #self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in op.getarglist()])
             #self.bldr.emit_debug("  FAILARGS:", [self._get_jsval(a) for a in failargs])
-            # If the guard has been compiled into a bridge then
-            # jump to that label.  Otherwise spill to frame and exit.
-            if descr._asmjs_label != 0:
+            # If the guard has been compiled into a bridge, jump to that label.
+            # If not, then spill to the frame and exit.
+            if descr._asmjs_glbl.label != 0:
                 if SANITYCHECK:
                     assert self.has_been_compiled
                 outputargs = [arg for arg in failargs if arg is not None]
-                self._genop_local_jump(descr._asmjs_label, outputargs)
+                self._genop_local_jump(descr._asmjs_glbl.label, outputargs)
                 # During initial compilation we would have pushed a gcmap here.
                 # We don't need it now, so skip over it.  Note that we can't
                 # free it in case older versions of the loop are still running.
                 self.next_compiled_gcmap += 1
             else:
+                # Tricky case: we may have compiled a bridge for this guard
+                # while the code was executing.  We need to jump into the
+                # newly-compiled code at the appropriate label.
+                translate_support_code = self.cpu.translate_support_code
+                offset, size = symbolic.get_field_token(GUARD_LABEL,
+                                                        "label",
+                                                        translate_support_code)
+                assert size == js.Int32.size
+                glbl = rffi.cast(lltype.Signed, descr._asmjs_glbl)
+                cur_label_adr = js.Plus(js.ConstInt(glbl), js.ConstInt(offset))
+                cur_label = js.HeapData(js.Int32, cur_label_adr)
+                with self.bldr.emit_if_block(js.NotEqual(cur_label, js.zero)):
+                    self.bldr.emit_comment("INVOKING NEWLY-COMPILED BRIDGE")
+                    # Spill jump args to the frame as inputargs for guard.
+                    outputargs = [arg for arg in failargs if arg is not None]
+                    self._genop_write_output_args(outputargs)
+                    # Directly re-invoke the new version of this function.
+                    # We can't use the trampoline here, as there may be
+                    # an active exception that the guard must capture.
+                    this_funcid = js.ConstInt(self.clt.compiled_funcid)
+                    self._genop_set_frame_next_call(js.frame,
+                                                    this_funcid,
+                                                    cur_label)
+                    call = js.CallFunc("jitInvoke", [this_funcid, js.frame])
+                    self.bldr.emit_assignment(js.frame, call)
+                    self.bldr.emit_exit()
+                # return _jitInvoke(this-func-id, newly-compiled-label, frame)
                 # If there might be an exception, capture it to the frame.
                 if self._guard_might_have_exception(op):
                     cpu = self.cpu
@@ -1543,7 +1587,7 @@ class CompiledBlockASMJS(object):
                 addr = js.FrameDescrAddr()
                 self.bldr.emit_store(js.ConstPtr(fail_descr), addr, js.Int32)
                 # Bail back to the interpreter to deal with it.
-                self._genop_set_frame_next_call(js.frame, 0, 0)
+                self._genop_set_frame_next_call(js.frame, js.zero, js.zero)
                 self.bldr.emit_exit()
 
     def _guard_might_have_exception(self, op):
