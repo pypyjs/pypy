@@ -111,7 +111,6 @@ class AssemblerASMJS(object):
     def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace."""
         clt = CompiledLoopTokenASMJS(self.cpu, looptoken.number)
-        rgc._make_sure_does_not_move(clt)
         looptoken.compiled_loop_token = clt
         self.setup(looptoken)
         clt.compiled_funcid = support.jitReserve()
@@ -168,8 +167,13 @@ class AssemblerASMJS(object):
                 faildescr._asmjs_clt = clt
                 faildescr._asmjs_funcid = clt.compiled_funcid
                 faildescr._asmjs_glbl = lltype.malloc(GUARD_LABEL, flavor="gc")
-                rgc._make_sure_does_not_move(faildescr._asmjs_glbl)
                 faildescr._asmjs_glbl.label = 0
+                if we_are_translated():
+                    glbl = cast_instance_to_gcref(faildescr._asmjs_glbl)
+                else:
+                    glbl = faildescr._asmjs_glbl
+                rgc._make_sure_does_not_move(glbl)
+                clt.inlined_gcrefs.append(glbl)
             # Label descrs start a new block.
             # They need to be told the current funcid.
             elif op.getopnum() == rop.LABEL:
@@ -1517,7 +1521,6 @@ class CompiledBlockASMJS(object):
 
     def _genop_guard_failure(self, test, op, faillocs=None):
         descr = op.getdescr()
-        rgc._make_sure_does_not_move(descr)
         assert isinstance(descr, AbstractFailDescr)
         assert descr._asmjs_funcid == self.clt.compiled_funcid
         failargs = op.getfailargs()

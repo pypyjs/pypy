@@ -140,7 +140,9 @@ class ASMJSBuilder(object):
             refval = (rffi.cast(lltype.Signed, val.getref_base()))
             self.emit(str(refval))
         elif isinstance(val, ConstFloat):
-            self.emit("%.17g" % (val.getfloat(),))
+            # XXX TODO: how to properly format floats in rython?
+            # The following loses precision.
+            self.emit("%f" % (val.getfloat(),))
         else:
             raise RuntimeError("Unknown js value type: %s" % (val,))
 
