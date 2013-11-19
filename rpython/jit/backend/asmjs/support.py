@@ -100,7 +100,7 @@ def jitFree(funcid):
 
 def load_asmjs(jssource, stdlib=None, foreign=None, heap=None):
     """Load asmjs source code as an equivalent python function."""
-    validate_asmjs(jssource)
+    #validate_asmjs(jssource)
     func = compile_asmjs(jssource)
     if heap is None:
         heap = NativeHeap()
@@ -651,6 +651,9 @@ class FOREIGN(object):
 
     def _gettimeofday(self, ptr):
         raise NotImplementedError
+
+    def _abort(self):
+        raise RuntimeError("ABORT")
 
     def __getattr__(self, name):
         # On-demand generation of dynCall_XXX methods.

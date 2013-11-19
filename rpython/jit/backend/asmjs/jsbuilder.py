@@ -245,6 +245,12 @@ class ASMJSBuilder(object):
         """Emit an immediate return from the function."""
         self.emit("return frame|0;\n")
 
+    def emit_assert(self, check, msg="ASSERTION FAILED", args=None):
+        if SANITYCHECK:
+            with self.emit_if_block(jsval.UNot(check)):
+                self.emit_debug(msg, args)
+                self.emit_expr(jsval.CallFunc("abort", []))
+
     def emit_comment(self, msg):
         if SANITYCHECK:
             self.emit("// %s\n" % (msg,))
