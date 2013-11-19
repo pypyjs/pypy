@@ -916,7 +916,14 @@ class CompiledBlockASMJS(object):
     genop_getarrayitem_gc_pure = genop_getarrayitem_gc
     genop_getarrayitem_raw = genop_getarrayitem_gc
     genop_getarrayitem_raw_pure = genop_getarrayitem_gc
-    genop_raw_load = genop_getarrayitem_gc
+
+    def genop_raw_load(self, op):
+        itemsize, offset, signed = unpack_arraydescr(op.getdescr())
+        base = self._get_jsval(op.getarg(0))
+        which = self._get_jsval(op.getarg(1))
+        addr = js.Plus(base, js.Plus(js.ConstInt(offset), which))
+        typ = js.HeapType.from_size_and_sign(itemsize, signed)
+        self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
 
     def genop_expr_getarrayitem_gc_pure(self, op):
         itemsize, offset, signed = unpack_arraydescr(op.getdescr())
@@ -941,7 +948,16 @@ class CompiledBlockASMJS(object):
         self.bldr.emit_store(value, addr, typ)
 
     genop_setarrayitem_raw = genop_setarrayitem_gc
-    genop_raw_store = genop_setarrayitem_gc
+
+    def genop_raw_store(self, op):
+        itemsize, offset, signed = unpack_arraydescr(op.getdescr())
+        base = self._get_jsval(op.getarg(0))
+        where = self._get_jsval(op.getarg(1))
+        value = self._get_jsval(op.getarg(2))
+        itemoffset = js.Plus(js.ConstInt(offset), where)
+        addr = js.Plus(base, itemoffset)
+        typ = js.HeapType.from_size_and_sign(itemsize, signed)
+        self.bldr.emit_store(value, addr, typ)
 
     def _genop_expr_int_unaryop(operator):
         def genop_expr_int_unaryop(self, op):

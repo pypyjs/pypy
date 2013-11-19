@@ -169,7 +169,7 @@ def NUM(v):
 
 
 def log(*args):
-    print " ".join(map(str, args))
+    print>>sys.stderr, " ".join(map(str, args))
 
 
 def jsmod(lhs, rhs):
@@ -600,11 +600,11 @@ class STDLIB(object):
     def __init__(self, heap):
         self._heap = heap
 
-    Int8Array = makeHeapView("b", ToInt32)
-    Int16Array = makeHeapView("h", ToInt32)
+    Int8Array = makeHeapView("b", lambda x: ToInt32(x) & 0xFF)
+    Int16Array = makeHeapView("h", lambda x: ToInt32(x) & 0xFFFF)
     Int32Array = makeHeapView("i", ToInt32)
-    Uint8Array = makeHeapView("B", ToUInt32)
-    Uint16Array = makeHeapView("H", ToUInt32)
+    Uint8Array = makeHeapView("B", lambda x: ToUInt32(x) & 0xFF)
+    Uint16Array = makeHeapView("H", lambda x: ToUInt32(x) & 0xFFFF)
     Uint32Array = makeHeapView("I", ToUInt32)
     Float32Array = makeHeapView("f", NUM)
     Float64Array = makeHeapView("d", NUM)
