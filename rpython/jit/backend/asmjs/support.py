@@ -159,9 +159,20 @@ def validate_asmjs(jssource):
 def ToInt32(v):
     return ctypes.c_int32(int(v)).value
 
+def ToInt16(v):
+    return ctypes.c_int16(int(v)).value
+
+def ToInt8(v):
+    return ctypes.c_int8(int(v)).value
 
 def ToUInt32(v):
     return ctypes.c_uint32(int(v)).value
+
+def ToUInt16(v):
+    return ctypes.c_uint16(int(v)).value
+
+def ToUInt8(v):
+    return ctypes.c_uint8(int(v)).value
 
 
 def NUM(v):
@@ -600,11 +611,11 @@ class STDLIB(object):
     def __init__(self, heap):
         self._heap = heap
 
-    Int8Array = makeHeapView("b", lambda x: ToInt32(x) & 0xFF)
-    Int16Array = makeHeapView("h", lambda x: ToInt32(x) & 0xFFFF)
+    Int8Array = makeHeapView("b", ToInt8)
+    Int16Array = makeHeapView("h", ToInt16)
     Int32Array = makeHeapView("i", ToInt32)
-    Uint8Array = makeHeapView("B", lambda x: ToUInt32(x) & 0xFF)
-    Uint16Array = makeHeapView("H", lambda x: ToUInt32(x) & 0xFFFF)
+    Uint8Array = makeHeapView("B", ToUInt8)
+    Uint16Array = makeHeapView("H", ToUInt16)
     Uint32Array = makeHeapView("I", ToUInt32)
     Float32Array = makeHeapView("f", NUM)
     Float64Array = makeHeapView("d", NUM)
