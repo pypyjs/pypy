@@ -42,6 +42,9 @@ class TestASMJSRunner(LLtypeBackendTest):
     def test_call(self):
         py.test.xfail("XXX TODO some problem with ffi result_size?")
 
+    def test_free_loop_and_bridges(self):
+        py.test.xfail("XXX TODO we don't use the asmmemmgr thing")
+
     def test_compile_asmlen(self):
         py.test.skip("not relevant for asmjs?")
 

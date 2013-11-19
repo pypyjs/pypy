@@ -1182,7 +1182,7 @@ class CompiledBlockASMJS(object):
         self._genop_call(op, descr, addr, args)
         resvar = self._get_jsval(op.result)
         with self.bldr.emit_if_block(js.Equal(resvar, js.zero)):
-            self._genop_check_and_propagate_exception()
+            self._genop_propagate_exception()
 
     def genop_cond_call(self, op):
         descr = op.getdescr()
@@ -1557,26 +1557,30 @@ class CompiledBlockASMJS(object):
         return False
 
     def _genop_check_and_propagate_exception(self):
+        pos_exctyp = js.ConstInt(self.cpu.pos_exception())
+        exctyp = js.HeapData(js.Int32, pos_exctyp)
+        with self.bldr.emit_if_block(exctyp):
+            self._genop_propagate_exception()
+
+    def _genop_propagate_exception(self):
         cpu = self.cpu
         if not cpu.propagate_exception_descr:
             return
         pos_exctyp = js.ConstInt(cpu.pos_exception())
         pos_excval = js.ConstInt(cpu.pos_exc_value())
-        exctyp = js.HeapData(js.Int32, pos_exctyp)
         excval = js.HeapData(js.Int32, pos_excval)
-        with self.bldr.emit_if_block(exctyp):
-            # Store the exception on the frame, and clear it.
-            self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
-            self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
-            self.bldr.emit_store(js.zero, pos_excval, js.Int32)
-            # Store the special propagate-exception descr on the frame.
-            descr = cast_instance_to_gcref(cpu.propagate_exception_descr)
-            addr = js.FrameDescrAddr()
-            self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
-            # Bail back to the invoking code to deal with it.
-            self._genop_store_gcmap()
-            self._genop_set_frame_next_call(js.frame, 0, 0)
-            self.bldr.emit_exit()
+        # Store the exception on the frame, and clear it.
+        self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
+        self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
+        self.bldr.emit_store(js.zero, pos_excval, js.Int32)
+        # Store the special propagate-exception descr on the frame.
+        descr = cast_instance_to_gcref(cpu.propagate_exception_descr)
+        addr = js.FrameDescrAddr()
+        self.bldr.emit_store(js.ConstPtr(descr), addr, js.Int32)
+        # Bail back to the invoking code to deal with it.
+        self._genop_store_gcmap()
+        self._genop_set_frame_next_call(js.frame, js.zero, js.zero)
+        self.bldr.emit_exit()
 
     #
     #  GC-related things.
