@@ -12,6 +12,8 @@ from rpython.jit.metainterp.history import (AbstractValue, Box, Const,
 
 from rpython.jit.backend.asmjs.arch import SANITYCHECK, WORD
 
+STANDARD_FUNCTIONS = ("imul", "sqrt")
+
 # Type markers to distinguish the type of values.
 # This is a class heirarchy, but rpython wont let me use issubclass().
 
@@ -577,7 +579,8 @@ class _CallFunc(ASMJSValue):
         self.arguments = arguments
 
     def emit_value(self, js):
-        js.imported_functions[self.funcname] = self.funcname
+        if self.funcname not in STANDARD_FUNCTIONS:
+            js.imported_functions[self.funcname] = self.funcname
         js.emit(self.funcname)
         js.emit("(")
         for i in xrange(len(self.arguments)):
@@ -599,7 +602,8 @@ class CallFunc(_CallFunc):
     """ASMJSValue representing result of external function call."""
 
     def __init__(self, funcname, arguments):
-        funcname = "_" + funcname
+        if funcname not in STANDARD_FUNCTIONS:
+            funcname = "_" + funcname
         _CallFunc.__init__(self, funcname, arguments)
 
 

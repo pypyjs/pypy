@@ -39,6 +39,7 @@ class ASMJSBuilder(object):
         chunks.append('var HF32 = new stdlib.Float32Array(heap);\n')
         chunks.append('var HF64 = new stdlib.Float64Array(heap);\n')
         chunks.append('var imul = stdlib.Math.imul;\n')
+        chunks.append('var sqrt = stdlib.Math.sqrt;\n')
         # Import any required names from the Module object.
         chunks.append('var tempDoublePtr = foreign.tempDoublePtr|0;\n')
         for funcname in self.imported_functions:

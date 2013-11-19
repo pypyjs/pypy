@@ -13,6 +13,7 @@ from rpython.jit.backend.llsupport.descr import (unpack_fielddescr,
                                                  ArrayDescr, CallDescr,
                                                  FieldDescr)
 from rpython.jit.codewriter import longlong
+from rpython.jit.codewriter.effectinfo import EffectInfo
 from rpython.rtyper.lltypesystem import lltype, rffi, rstr
 from rpython.rtyper.annlowlevel import cast_instance_to_gcref, llhelper
 from rpython.jit.backend.model import CompiledLoopToken
@@ -1153,13 +1154,20 @@ class CompiledBlockASMJS(object):
         descr = op.getdescr()
         assert isinstance(descr, CallDescr)
         assert op.numargs() == len(descr.arg_classes) + 1
-        addr = self._get_jsval(op.getarg(0))
-        args = []
-        i = 1
-        while i < op.numargs():
-            args.append(self._get_jsval(op.getarg(i)))
-            i += 1
-        self._genop_call(op, descr, addr, args)
+        # See if we can special-case this call with a builtin.
+        # XXX TODO: wtf is "oop" anyway?
+        effectinfo = descr.get_extra_info()
+        oopspecindex = effectinfo.oopspecindex
+        if oopspecindex == EffectInfo.OS_MATH_SQRT:
+            self._genop_math_sqrt(op)
+        else:
+            addr = self._get_jsval(op.getarg(0))
+            args = []
+            i = 1
+            while i < op.numargs():
+                args.append(self._get_jsval(op.getarg(i)))
+                i += 1
+            self._genop_call(op, descr, addr, args)
 
     def genop_call_malloc_gc(self, op):
         descr = op.getdescr()
@@ -1337,6 +1345,12 @@ class CompiledBlockASMJS(object):
                 self.bldr.emit_comment("  SZ: %s" % (descr.get_result_size(),))
                 self.bldr.emit_comment("  SGN: %s" % (descr.is_result_signed(),))
                 self.bldr.emit_assignment(self._get_jsval(op.result), call)
+
+    def _genop_math_sqrt(self, op):
+        assert op.numargs() == 2
+        arg = self._get_jsval(op.getarg(1))
+        res = self._get_jsval(op.result)
+        self.bldr.emit_assignment(res, js.CallFunc("sqrt", [arg]))
 
     def genop_force_token(self, op):
         if op.result is not None:

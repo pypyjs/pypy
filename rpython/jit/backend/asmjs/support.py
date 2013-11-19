@@ -14,6 +14,7 @@ can be tested.  It is very slow and depends on the generated asmjs code being
 """
 
 import sys
+import math
 import ctypes
 import struct
 import subprocess
@@ -626,6 +627,10 @@ class STDLIB(object):
         @staticmethod
         def imul(a, b):
             return NUM(ToInt32((ToInt32(a) * ToInt32(b))))
+
+        @staticmethod
+        def sqrt(a):
+            return NUM(math.sqrt(a))
 
 
 # We need some 8-byte-aligned memory to use as temporary storage
