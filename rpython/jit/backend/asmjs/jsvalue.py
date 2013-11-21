@@ -1,4 +1,5 @@
 
+import os
 import textwrap
 
 from rpython.rlib.rarithmetic import intmask
@@ -39,6 +40,7 @@ def gettype(value):
             return Fixnum
         if value.type == REF:
             return Fixnum
+    os.write(2, "Unknown ASMJS value: %s" % (value,))
     raise RuntimeError("Unknown ASMJS value: %s" % (value,))
 
 
@@ -62,6 +64,7 @@ def istype(value, typ):
         return vtyp == Unsigned
     if typ == Fixnum:
         return vtyp == Fixnum
+    os.write(2, "Unexpected jstype: %s\n" % (typ,))
     raise RuntimeError("Unexpected jstype: %s" % (typ,))
     
 
@@ -70,6 +73,7 @@ def _getint(value):
         return rffi.cast(lltype.Signed, value.getint())
     if isinstance(value, ConstPtr):
         return rffi.cast(lltype.Signed, value.getref_base())
+    os.write(2, "Unexpected jstype: %s\n" % (value,))
     raise RuntimeError("Unexpected jstype: %s" % (value,))
 
     
@@ -85,11 +89,16 @@ class HeapType(object):
     as well as the size of the resulting value.
     """
 
-    def __init__(self, jstype, heap_name,  shift):
+    def __init__(self, jstype, heap_name,  shift, signed):
         self.jstype = jstype
         self.heap_name = heap_name
         self.shift = shift
         self.size = 2**shift
+        self.signed = signed
+
+    def cast_integer(self, value):
+        """Cast an integer to this type."""
+        return cast_integer(value, self.size, self.signed)
 
     @staticmethod
     def from_kind(kind):
@@ -100,6 +109,7 @@ class HeapType(object):
             return Int32
         if kind == REF:
             return UInt32
+        os.write(2, "Unsupported kind: %s\n" % (kind,))
         raise RuntimeError("unsupported kind: %s" % (kind,))
 
     @staticmethod
@@ -151,14 +161,14 @@ class HeapType(object):
         raise NotImplementedError("unsupported box size: %d" % (size,))
 
 
-Int8 = HeapType(Intish, "HI8", 0)
-Int16 = HeapType(Intish, "HI16", 1)
-Int32 = HeapType(Intish, "HI32", 2)
-UInt8 = HeapType(Intish, "HU8", 0)
-UInt16 = HeapType(Intish, "HU16", 1)
-UInt32 = HeapType(Intish, "HU32", 2)
-Float32 = HeapType(Doublish, "HF32", 2)
-Float64 = HeapType(Doublish, "HF64", 3)
+Int8 = HeapType(Intish, "HI8", 0, True)
+Int16 = HeapType(Intish, "HI16", 1, True)
+Int32 = HeapType(Intish, "HI32", 2, True)
+UInt8 = HeapType(Intish, "HU8", 0, False)
+UInt16 = HeapType(Intish, "HU16", 1, False)
+UInt32 = HeapType(Intish, "HU32", 2, False)
+Float32 = HeapType(Doublish, "HF32", 2, True)
+Float64 = HeapType(Doublish, "HF64", 3, True)
 
 
 #  Classes or factories that produce ASMJSValue objects.
@@ -252,6 +262,9 @@ class ASMJSUnaryOp(ASMJSValue):
     def __init__(self, operand):
         self.operand = operand
 
+    def __str__(self):
+        return "%s(%s)" % (self.__class__.__name__, self.operand)
+
     def emit_value(self, js):
         js.emit(self.operator)
         js.emit("(")
@@ -283,14 +296,14 @@ class UMinus(ASMJSUnaryOp):
     operator = "-"
 
     def __init__(self, operand):
-        if istype(operand, Int):
-            self.jstype = Intish
-        elif istype(operand, Doublish):
+        if istype(operand, Doublish):
             self.jstype = Double
         else:
-            if SANITYCHECK:
-                assert istype(operand, Intish)
-            operand = IntCast(operand)
+            if not istype(operand, Int):
+                if SANITYCHECK:
+                    assert istype(operand, Intish)
+                operand = IntCast(operand)
+            self.jstype = Intish
         ASMJSUnaryOp.__init__(self, operand)
 
 
@@ -307,8 +320,6 @@ class UNot(ASMJSUnaryOp):
     operator = "!"
 
     def __init__(self, operand):
-        if SANITYCHECK:
-            assert istype(operand, Intish)
         if not istype(operand, Int):
             operand = IntCast(operand)
         ASMJSUnaryOp.__init__(self, operand)
@@ -324,6 +335,9 @@ class ASMJSBinaryOp(ASMJSValue):
     def __init__(self, lhs, rhs):
         self.lhs = lhs
         self.rhs = rhs
+
+    def __str__(self):
+        return "%s(%s, %s)" % (self.__class__.__name__, self.lhs, self.rhs)
 
     def emit_value(self, js):
         js.emit("(")
@@ -396,9 +410,6 @@ class IMul(ASMJSBinaryOp):
     operator = "*"
 
     def __init__(self, lhs, rhs):
-        if SANITYCHECK:
-            assert istype(lhs, Intish)
-            assert istype(rhs, Intish)
         if not istype(lhs, Int):
             lhs = IntCast(lhs)
         if not istype(rhs, Int):
@@ -440,7 +451,8 @@ class _Divish(ASMJSBinaryOp):
         else:
             if SANITYCHECK:
                 assert istype(lhs, Doublish)
-                assert istype(rhs, Doublish)
+            if not istype(rhs, Doublish):
+                rhs = DoubleCast(rhs)
             self.jstype = Double
         ASMJSBinaryOp.__init__(self, lhs, rhs)
 
@@ -569,6 +581,50 @@ def DoubleCast(value):
     return UPlus(value)
 
 
+def SignedShortCast(value):
+    """Explicitly cast a value to type 'signed short'."""
+    shift = ConstInt(16)
+    return RShift(LShift(value, shift), shift)
+
+
+def UnsignedShortCast(value):
+    """Explicitly cast a value to type 'usigned short'."""
+    return UnsignedCast(And(value, ConstInt(0xFFFF)))
+
+
+def SignedCharCast(value):
+    """Explicitly cast a value to type 'signed char'."""
+    shift = ConstInt(24)
+    return RShift(LShift(value, shift), shift)
+
+
+def UnsignedCharCast(value):
+    """Explicitly cast a value to type 'unsigned char'."""
+    return UnsignedCast(And(value, ConstInt(0xFF)))
+
+
+def cast_integer(value, size, sign):
+    """Cast integer to the given size and signedness."""
+    if size == WORD:
+        if sign:
+            return SignedCast(value)
+        else:
+            return UnsignedCast(value)
+    elif size == WORD // 2:
+        if sign:
+            return SignedShortCast(value)
+        else:
+            return UnsignedShortCast(value)
+    elif size == WORD // 4:
+        if sign:
+            return SignedCharCast(value)
+        else:
+            return UnsignedCharCast(value)
+    else:
+        os.write(2, "Unknown integer size: %d\n" % (size,))
+        raise RuntimeError("Unknown integer size: %d" % (size,))
+
+
 class _CallFunc(ASMJSValue):
     """ASMJSValue representing result of external function call."""
 
@@ -620,6 +676,7 @@ class DynCallFunc(_CallFunc):
             self.jstype = Doublish
 
 
+label = IntVar("label")
 frame = IntVar("frame")
 
 

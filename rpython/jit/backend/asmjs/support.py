@@ -79,12 +79,12 @@ def jitCopy(srcId, dstId):
     _jitCompiledFunctions[dstId] = _jitCompiledFunctions[srcId]
 
 
-@jsexternal([rffi.INT, rffi.INT], rffi.INT)
-def jitInvoke(funcid, data):
+@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT)
+def jitInvoke(funcid, label, frame):
     func = _jitCompiledFunctions.get(funcid, None)
     if func is None:
         return 0
-    return int(func(data))
+    return int(func(label, frame))
 
 
 @jsexternal([rffi.INT], lltype.Void)
@@ -118,6 +118,7 @@ def compile_asmjs(jssource):
     visitor = CompileASMJSVisitor()
     visitor.dispatch(ast)
     pysource = visitor.getpysource()
+    #print pysource
     ns = {}
     pycode = compile(pysource, "<pyasmjs>", "exec")
     exec pycode in globals(), ns
@@ -157,23 +158,32 @@ def validate_asmjs(jssource):
             raise ValueError(stdout)
 
 
+def _int(v):
+    try:
+        return int(v)
+    except (OverflowError, ValueError), e:
+        if str(v) not in ('inf', '-inf', 'nan'):
+            raise
+        return 0
+
+
 def ToInt32(v):
-    return ctypes.c_int32(int(v)).value
+    return ctypes.c_int32(_int(v)).value
 
 def ToInt16(v):
-    return ctypes.c_int16(int(v)).value
+    return ctypes.c_int16(_int(v)).value
 
 def ToInt8(v):
-    return ctypes.c_int8(int(v)).value
+    return ctypes.c_int8(_int(v)).value
 
 def ToUInt32(v):
-    return ctypes.c_uint32(int(v)).value
+    return ctypes.c_uint32(_int(v)).value
 
 def ToUInt16(v):
-    return ctypes.c_uint16(int(v)).value
+    return ctypes.c_uint16(_int(v)).value
 
 def ToUInt8(v):
-    return ctypes.c_uint8(int(v)).value
+    return ctypes.c_uint8(_int(v)).value
 
 
 def NUM(v):
@@ -189,7 +199,18 @@ def jsmod(lhs, rhs):
     # The modulo operator in python takes the sign of the denominator.
     # The below implements the former in terms of the later.
     sign = 1 if lhs >= 0 else -1
-    return sign * (abs(lhs) % abs(rhs))
+    try:
+        return sign * (abs(lhs) % abs(rhs))
+    except ZeroDivisionError:
+        return float('NaN')
+
+
+def jsdiv(lhs, rhs):
+    # Doing x/0 in javascript produces infinity.
+    try:
+        return lhs / rhs
+    except ZeroDivisionError:
+        return float('inf')
 
 
 class CompileASMJSVisitor(RPythonVisitor):
@@ -370,16 +391,11 @@ class CompileASMJSVisitor(RPythonVisitor):
 
     def visit_expr_or(self, node):
         lhs, rhs = node.children
-        if rhs.symbol == "NUMBER" and rhs.additional_info == "0":
-            self.emit("NUM(ToInt32(")
-            self.dispatch(lhs)
-            self.emit("))")
-        else:
-            self.emit("NUM(ToInt32(")
-            self.dispatch(lhs)
-            self.emit(") | ToInt32(")
-            self.dispatch(rhs)
-            self.emit("))")
+        self.emit("NUM(ToInt32(")
+        self.dispatch(lhs)
+        self.emit(") | ToInt32(")
+        self.dispatch(rhs)
+        self.emit("))")
 
     def visit_expr_xor(self, node):
         lhs, rhs = node.children
@@ -501,9 +517,9 @@ class CompileASMJSVisitor(RPythonVisitor):
 
     def visit_expr_divide(self, node):
         lhs, rhs = node.children
-        self.emit("(")
+        self.emit("jsdiv(")
         self.dispatch(lhs)
-        self.emit(") / (")
+        self.emit(", ")
         self.dispatch(rhs)
         self.emit(")")
 
@@ -565,7 +581,9 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.emit(node.additional_info)
 
     def visit_NUMBER(self, node):
+        self.emit("NUM(")
         self.emit(node.additional_info)
+        self.emit(")")
 
     def visit_STRING(self, node):
         self.emit(node.additional_info)

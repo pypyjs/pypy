@@ -1,4 +1,5 @@
 
+import os
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
 from rpython.rtyper.llinterp import LLInterpreter
@@ -112,21 +113,21 @@ class CPU_ASMJS(AbstractLLCPU):
 
         return execute_token
 
-    def set_frame_next_call(self, ll_frame, func_id, func_goto):
+    def set_frame_next_call(self, ll_frame, funcid, label):
         # High 24 bits give the function id.
         # Low 8 bits give the target label within that function.
-        assert func_id < 2**24
-        assert func_goto < 0xFF
-        next_call = (func_id << 8) | func_goto
+        assert funcid < 2**24
+        assert label < 0xFF
+        next_call = (funcid << 8) | label
         offset = self.get_ofs_of_frame_field('jf_force_descr')
         self.write_int_at_mem(ll_frame, offset, WORD, 0, next_call)
 
     def get_frame_next_call(self, ll_frame):
         offset = self.get_ofs_of_frame_field('jf_force_descr')
         next_call = self.read_int_at_mem(ll_frame, offset, WORD, 0)
-        func_id = next_call >> 8
-        func_goto = next_call & 0xFF
-        return (func_id, func_goto)
+        funcid = next_call >> 8
+        label = next_call & 0xFF
+        return (funcid, label)
 
     def get_execute_trampoline_adr(self):
         exeptr = llhelper(self._execute_trampoline_FUNCPTR,
@@ -137,11 +138,16 @@ class CPU_ASMJS(AbstractLLCPU):
 
         def execute_trampoline(ll_frame_adr):
             ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-            func_id, func_goto = self.get_frame_next_call(ll_frame)
-            while func_id != 0:
-                ll_frame_adr = support.jitInvoke(func_id, ll_frame_adr)
+            funcid, label = self.get_frame_next_call(ll_frame)
+            os.write(2, "EXECUTE TRAMPOLINE %d %d\n" % (funcid, label,))
+            while funcid != 0:
+                self.set_frame_next_call(ll_frame, 0, 0)
+                ll_frame_adr = support.jitInvoke(funcid, label, ll_frame_adr)
                 ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-                func_id, func_goto = self.get_frame_next_call(ll_frame)
+                funcid, label = self.get_frame_next_call(ll_frame)
+                if funcid:
+                    os.write(2, "  BOUNCE TRAMPOLINE %d %d\n" % (funcid, label,))
+            os.write(2, "  DONE TRAMPOLINE\n")
             return ll_frame_adr
  
         ARGS = [rffi.INT]

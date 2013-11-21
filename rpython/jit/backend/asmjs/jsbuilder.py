@@ -1,11 +1,19 @@
 
+import os
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.jit.metainterp.history import (ConstInt, ConstFloat, ConstPtr,
-                                            TargetToken)
 
 from rpython.jit.backend.asmjs import jsvalue as jsval
 from rpython.jit.backend.asmjs.arch import SANITYCHECK
+
+
+class ASMJSFragment(object):
+
+    def __init__(self, source, intvars, doublevars, functions):
+        self.source = source
+        self.all_intvars = intvars
+        self.all_doublevars = doublevars
+        self.imported_functions = functions
 
 
 class ASMJSBuilder(object):
@@ -28,7 +36,7 @@ class ASMJSBuilder(object):
     def _build_prelude(self):
         chunks = []
         # Standard asmjs prelude stuff.
-        chunks.append('function rpyjit(stdlib, foreign, heap){\n')
+        chunks.append('function M(stdlib, foreign, heap){\n')
         chunks.append('"use asm";\n')
         chunks.append('var HI8 = new stdlib.Int8Array(heap);\n')
         chunks.append('var HI16 = new stdlib.Int16Array(heap);\n')
@@ -45,8 +53,9 @@ class ASMJSBuilder(object):
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
-        chunks.append('function F(frame){\n')
+        chunks.append('function F(label, frame){\n')
         chunks.append('frame=frame|0;\n')
+        chunks.append('label=label|0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
@@ -64,31 +73,35 @@ class ASMJSBuilder(object):
         chunks.append('}\n')
         return chunks
 
-    def allocate_intvar(self):
+    def allocate_intvar(self, num=-1):
         """Allocate a variable of type int.
 
         If there is a previously-freed variable of appropriate type then
         that variable is re-used; otherwise a fresh variable name is
         allocated and emitted.
         """
-        if len(self.free_intvars) > 0:
+        if num < 0 and len(self.free_intvars) > 0:
             varname = self.free_intvars.pop()
         else:
-            varname = "i%d" % (len(self.all_intvars),)
+            if num < 0:
+                num = len(self.all_intvars)
+            varname = "i%d" % (num,)
             self.all_intvars[varname] = 0
         return jsval.IntVar(varname)
 
-    def allocate_doublevar(self):
+    def allocate_doublevar(self, num=-1):
         """Allocate a variable of type double.
 
         If there is a previously-freed variable of appropriate type then
         that variable is re-used; otherwise a fresh variable name is
         allocated and emitted.
         """
-        if len(self.free_doublevars) > 0:
+        if num < 0 and len(self.free_doublevars) > 0:
             varname = self.free_doublevars.pop()
         else:
-            varname = "f%d" % (len(self.all_doublevars),)
+            if num < 0:
+                num = len(self.all_doublevars)
+            varname = "f%d" % (num,)
             self.all_doublevars[varname] = 0.0
         return jsval.DoubleVar(varname)
 
@@ -101,16 +114,6 @@ class ASMJSBuilder(object):
         """Free up the given double variable for future re-use."""
         assert isinstance(var, jsval.DoubleVar)
         self.free_doublevars.append(var.varname)
-
-    def set_initial_value_intvar(self, var, value):
-        """Set the initial value of an integer variable."""
-        assert isinstance(var, jsval.IntVar)
-        self.all_intvars[var.varname] = value
-
-    def set_initial_value_doublevar(self, var, value):
-        """Set the initial value of an integer variable."""
-        assert isinstance(var, jsval.DoubleVar)
-        self.all_doublevars[var.varname] = value
 
     def emit(self, code):
         """Emit the given string directly into the generated code."""
@@ -133,17 +136,21 @@ class ASMJSBuilder(object):
             self.emit_value(jsval.zero)
         elif isinstance(val, jsval.ASMJSValue):
             val.emit_value(self)
-        elif isinstance(val, ConstInt):
+        elif isinstance(val, jsval.ConstInt):
             intval = (rffi.cast(lltype.Signed, val.getint()))
             self.emit(str(intval))
-        elif isinstance(val, ConstPtr):
+        elif isinstance(val, jsval.ConstPtr):
             refval = (rffi.cast(lltype.Signed, val.getref_base()))
             self.emit(str(refval))
-        elif isinstance(val, ConstFloat):
+        elif isinstance(val, jsval.ConstFloat):
             # XXX TODO: how to properly format floats in rython?
             # The following loses precision.
-            self.emit("%f" % (val.getfloat(),))
+            if not we_are_translated():
+                self.emit("%r" % (val.getfloat(),))
+            else:
+                self.emit("%f" % (val.getfloat(),))
         else:
+            os.write(2, "Unknown js value type: %s" % (val,))
             raise RuntimeError("Unknown js value type: %s" % (val,))
 
     def emit_expr(self, val):
@@ -185,8 +192,7 @@ class ASMJSBuilder(object):
             addr = jsval.tempDoublePtr
             word1 = jsval.HeapData(jsval.Int32, tempaddr)
             self.emit_store(word1, addr, jsval.Int32)
-            wordsize = ConstInt(4)
-            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, wordsize))
+            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, js.word))
             self.emit_store(word2, jsval.Plus(addr, wordsize), jsval.Int32)
             self.free_intvar(tempaddr)
         # Now we can do the actual load.
@@ -230,13 +236,15 @@ class ASMJSBuilder(object):
         self.emit(")>>")
         self.emit(str(typ.shift))
         self.emit("]=")
+        # XXX TODO: I don't think this is be necessary..?
+        if typ.jstype == jsval.Intish:
+            value = typ.cast_integer(value)
         self.emit_value(value)
         self.emit(";\n")
         if typ is jsval.Float64:
             word1 = jsval.HeapData(jsval.Int32, addr)
             self.emit_store(word1, tempaddr, jsval.Int32)
-            wordsize = ConstInt(4)
-            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, wordsize))
+            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, js.word))
             self.emit_store(word2, jsval.Plus(tempaddr, wordsize), jsval.Int32)
             self.free_intvar(tempaddr)
 
@@ -283,6 +291,19 @@ class ASMJSBuilder(object):
 
     def emit_case_block(self, value):
         return ctx_case_block(self, value)
+
+    def emit_fragment(self, fragment):
+        self.source_chunks.append(fragment.source)
+        self.all_intvars.update(fragment.all_intvars)
+        self.all_doublevars.update(fragment.all_doublevars)
+        self.imported_functions.update(fragment.imported_functions)
+
+    def capture_fragment(self):
+        fragment = ASMJSFragment("".join(self.source_chunks),
+                                 self.all_intvars, self.all_doublevars,
+                                 self.imported_functions)
+        del self.source_chunks[:]
+        return fragment
 
 
 class ctx_if_block(object):
