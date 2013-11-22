@@ -1,3 +1,6 @@
+import sys
+sys.setrecursionlimit(10000)
+
 import py
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi, rstr
 from rpython.jit.metainterp.history import ResOperation, TargetToken,\

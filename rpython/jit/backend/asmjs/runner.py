@@ -125,6 +125,8 @@ class CPU_ASMJS(AbstractLLCPU):
     def get_frame_next_call(self, ll_frame):
         offset = self.get_ofs_of_frame_field('jf_force_descr')
         next_call = self.read_int_at_mem(ll_frame, offset, WORD, 0)
+        # Clear it immediately, as it's not a valid gcref.
+        self.write_int_at_mem(ll_frame, offset, WORD, 0, 0)
         funcid = next_call >> 8
         label = next_call & 0xFF
         return (funcid, label)
@@ -141,7 +143,6 @@ class CPU_ASMJS(AbstractLLCPU):
             funcid, label = self.get_frame_next_call(ll_frame)
             os.write(2, "EXECUTE TRAMPOLINE %d %d\n" % (funcid, label,))
             while funcid != 0:
-                self.set_frame_next_call(ll_frame, 0, 0)
                 ll_frame_adr = support.jitInvoke(funcid, label, ll_frame_adr)
                 ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
                 funcid, label = self.get_frame_next_call(ll_frame)

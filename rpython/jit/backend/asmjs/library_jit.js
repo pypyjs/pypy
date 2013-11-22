@@ -109,19 +109,20 @@ var LibraryJIT = {
 
   // Invoke a JIT-compiled function.
   //
-  // All JIT-compiled functions accept an integer argument and produce an
+  // All JIT-compiled functions accept two integer arguments and produce an
   // integer result.  You'll probably want to treat these like a void* to
   // pass around data, but that's up to you.
   //
   // If you pass an id that does not have compiled code associated with it,
   // it will produce a return value of zero.
   //
-  jitInvoke: function(id, data) {
+  jitInvoke: function(id, label, frame) {
     id = id|0;
-    data = data|0;
+    label = label|0;
+    frame = frame|0;
     var func = Module._jitCompiledFunctions[id];
     if (func) {
-        return func(data)|0;
+        return func(label, frame)|0;
     } else {
         return 0|0;
     }

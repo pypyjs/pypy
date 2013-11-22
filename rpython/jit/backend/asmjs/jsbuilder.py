@@ -143,8 +143,8 @@ class ASMJSBuilder(object):
             refval = (rffi.cast(lltype.Signed, val.getref_base()))
             self.emit(str(refval))
         elif isinstance(val, jsval.ConstFloat):
-            # XXX TODO: how to properly format floats in rython?
-            # The following loses precision.
+            # RPython doesn't have %r format for float repr.
+            # XXX TODO: how to do this with no loss of precsion?
             if not we_are_translated():
                 self.emit("%r" % (val.getfloat(),))
             else:
@@ -190,10 +190,10 @@ class ASMJSBuilder(object):
             tempaddr = self.allocate_intvar()
             self.emit_assignment(tempaddr, addr)
             addr = jsval.tempDoublePtr
-            word1 = jsval.HeapData(jsval.Int32, tempaddr)
-            self.emit_store(word1, addr, jsval.Int32)
-            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, js.word))
-            self.emit_store(word2, jsval.Plus(addr, wordsize), jsval.Int32)
+            pt1 = jsval.HeapData(jsval.Int32, tempaddr)
+            self.emit_store(pt1, addr, jsval.Int32)
+            pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, jsval.word))
+            self.emit_store(pt2, jsval.Plus(addr, jsval.word), jsval.Int32)
             self.free_intvar(tempaddr)
         # Now we can do the actual load.
         assert isinstance(target, jsval.Variable)
@@ -236,16 +236,13 @@ class ASMJSBuilder(object):
         self.emit(")>>")
         self.emit(str(typ.shift))
         self.emit("]=")
-        # XXX TODO: I don't think this is be necessary..?
-        if typ.jstype == jsval.Intish:
-            value = typ.cast_integer(value)
         self.emit_value(value)
         self.emit(";\n")
         if typ is jsval.Float64:
-            word1 = jsval.HeapData(jsval.Int32, addr)
-            self.emit_store(word1, tempaddr, jsval.Int32)
-            word2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, js.word))
-            self.emit_store(word2, jsval.Plus(tempaddr, wordsize), jsval.Int32)
+            pt1 = jsval.HeapData(jsval.Int32, addr)
+            self.emit_store(pt1, tempaddr, jsval.Int32)
+            pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, jsval.word))
+            self.emit_store(pt2, jsval.Plus(tempaddr, jsval.word), jsval.Int32)
             self.free_intvar(tempaddr)
 
     def emit_continue_loop(self):
@@ -308,86 +305,86 @@ class ASMJSBuilder(object):
 
 class ctx_if_block(object):
 
-    def __init__(self, js, test):
-        self.js = js
+    def __init__(self, bldr, test):
+        self.bldr = bldr
         if not jsval.istype(test, jsval.Int):
             test = jsval.IntCast(test)
         self.test = test
 
     def __enter__(self):
-        self.js.emit("if(")
-        self.js.emit_value(self.test)
-        self.js.emit("){\n")
-        return self.js
+        self.bldr.emit("if(")
+        self.bldr.emit_value(self.test)
+        self.bldr.emit("){\n")
+        return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("}\n")
+        self.bldr.emit("}\n")
 
 
 class ctx_else_block(object):
 
-    def __init__(self, js):
-        self.js = js
+    def __init__(self, bldr):
+        self.bldr = bldr
 
     def __enter__(self):
-        self.js.emit("else {\n")
-        return self.js
+        self.bldr.emit("else {\n")
+        return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("}\n")
+        self.bldr.emit("}\n")
 
 
 class ctx_while_block(object):
 
-    def __init__(self, js, test):
-        self.js = js
+    def __init__(self, bldr, test):
+        self.bldr = bldr
         if not jsval.istype(test, jsval.Int):
             test = jsval.IntCast(test)
         self.test = test
 
     def __enter__(self):
-        self.js.emit("while(")
-        self.js.emit_value(self.test)
-        self.js.emit("){\n")
-        return self.js
+        self.bldr.emit("while(")
+        self.bldr.emit_value(self.test)
+        self.bldr.emit("){\n")
+        return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("}\n")
+        self.bldr.emit("}\n")
 
 
 class ctx_switch_block(object):
 
-    def __init__(self, js, value):
-        self.js = js
+    def __init__(self, bldr, value):
+        self.bldr = bldr
         if not jsval.istype(value, jsval.Signed):
             value = jsval.SignedCast(value)
         self.value = value
 
     def __enter__(self):
-        self.js.emit("switch(")
-        self.js.emit_value(self.value)
-        self.js.emit("){\n")
-        return self.js
+        self.bldr.emit("switch(")
+        self.bldr.emit_value(self.value)
+        self.bldr.emit("){\n")
+        return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("default:\n")
-        self.js.emit_exit()
-        self.js.emit("}\n")
+        self.bldr.emit("default:\n")
+        self.bldr.emit_exit()
+        self.bldr.emit("}\n")
 
 
 class ctx_case_block(object):
 
-    def __init__(self, js, value):
-        self.js = js
+    def __init__(self, bldr, value):
+        self.bldr = bldr
         if not jsval.istype(value, jsval.Signed):
             value = jsval.SignedCast(value)
         self.value = value
 
     def __enter__(self):
-        self.js.emit("case (")
-        self.js.emit_value(self.value)
-        self.js.emit("): {\n")
-        return self.js
+        self.bldr.emit("case (")
+        self.bldr.emit_value(self.value)
+        self.bldr.emit("): {\n")
+        return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.js.emit("break;\n}\n")
+        self.bldr.emit("break;\n}\n")

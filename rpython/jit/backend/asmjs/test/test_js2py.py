@@ -65,7 +65,7 @@ def build_jssrc(expr):
 def execute_py(jssrc):
     """Execute the  given JS by converting it to a python function."""
     F = support.load_asmjs(jssrc)
-    return F(0)
+    return F(0, 0)
 
 
 def execute_js(jssrc):
@@ -80,7 +80,7 @@ def execute_js(jssrc):
              "Float32Array:Float32Array, Float64Array:Float64Array}"
     p.stdin.write("var stdlib = " + stdlib + "\n")
     p.stdin.write("var F = M(stdlib, {}, new ArrayBuffer(0x1000))\n")
-    p.stdin.write("print(F(0))\n")
+    p.stdin.write("print(F(0, 0))\n")
     p.stdin.close()
     assert p.wait() == 0
     return int(p.stdout.read().strip().split("\n")[-2])
@@ -88,10 +88,19 @@ def execute_js(jssrc):
 
 class TestJSToPythonConversion(unittest.TestCase):
 
-    def test_integer_operations(self):
+    def _perform_integer_operations(self):
         r = random.Random()
-        for _ in xrange(1000):
+        for _ in xrange(100):
             seed = r.uniform(0, 1000)
             expr = make_random_expr(20, seed)
             jssrc = build_jssrc(expr)
             self.assertEqual(execute_py(jssrc), execute_js(jssrc))
+
+    def test_integer_operations_1(self):
+        self._perform_integer_operations()
+
+    def test_integer_operations_2(self):
+        self._perform_integer_operations()
+
+    def test_integer_operations_3(self):
+        self._perform_integer_operations()

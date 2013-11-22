@@ -771,6 +771,10 @@ for nm in globals().keys():
         continue
     if not binop.operator or nm.startswith("_") or nm == "URShift":
         continue
+    if nm == "Div" or nm == "Mod":
+        # XXX TODO: python and js semantics differ for these operations.
+        # Need to define some helpers to fold them correctly.
+        continue
     binopnm = "_" + nm
     assert binopnm not in globals()
     globals()[binopnm] = binop

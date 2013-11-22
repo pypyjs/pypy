@@ -81,7 +81,7 @@ class EmscriptenPlatform(BasePosix):
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
-      #"-g2",
+      "-g2",
     ]
 
     def execute(self, executable, args=None, *a, **k):
