@@ -9,7 +9,7 @@ from rpython.jit.backend.llsupport import jitframe
 from rpython.jit.metainterp import history
 
 from rpython.jit.backend.asmjs import support
-from rpython.jit.backend.asmjs.assembler import AssemblerASMJS
+from rpython.jit.backend.asmjs.assembler import AssemblerASMJS, CompiledLoopTokenASMJS
 from rpython.jit.backend.asmjs.arch import WORD, SANITYCHECK
 
 
@@ -81,6 +81,7 @@ class CPU_ASMJS(AbstractLLCPU):
 
         def execute_token(executable_token, *args):
             clt = executable_token.compiled_loop_token
+            assert isinstance(clt, CompiledLoopTokenASMJS)
             func_id = clt.compiled_funcid
             frame_info = clt.frame_info
             frame = self.gc_ll_descr.malloc_jitframe(frame_info)
@@ -92,6 +93,7 @@ class CPU_ASMJS(AbstractLLCPU):
                 prev_interpreter = LLInterpreter.current_interpreter
                 LLInterpreter.current_interpreter = self.debug_ll_interpreter
             try:
+                # Store each argument into the frame.
                 for i, kind in kinds:
                     arg = args[i]
                     num = locs[i]
@@ -102,6 +104,10 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
+                # Ensure the frame has a valid gcmap.
+                gcmap = clt.compiled_blocks[0].initial_gcmap
+                self.set_frame_gcmap(ll_frame, gcmap)
+                # Invoke the trampoline to execute it.
                 self.set_frame_next_call(ll_frame, func_id, 0)
                 ll_frame_adr = self.cast_ptr_to_int(ll_frame)
                 ll_frame_adr = self._execute_trampoline_func(ll_frame_adr)
@@ -112,6 +118,11 @@ class CPU_ASMJS(AbstractLLCPU):
             return ll_frame
 
         return execute_token
+
+    def set_frame_gcmap(self, ll_frame, gcmap):
+        offset = self.get_ofs_of_frame_field('jf_gcmap')
+        value = rffi.cast(lltype.Signed, gcmap)
+        self.write_int_at_mem(ll_frame, offset, WORD, 0, value)
 
     def set_frame_next_call(self, ll_frame, funcid, label):
         # High 24 bits give the function id.

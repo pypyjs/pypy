@@ -707,6 +707,7 @@ class FOREIGN(object):
                 # raise any exceptions, but it will record them in a
                 # special private area of the ll2ctypes module.
                 res = functype(funcaddr)(*args)
+                import sys; print>>sys.stderr, "CALL DONE", res, ll2ctypes._callback_exc_info
                 if ll2ctypes._callback_exc_info is not None:
                     exc_typ, exc_val, exc_tb = ll2ctypes._callback_exc_info
                     ll2ctypes._callback_exc_info = None

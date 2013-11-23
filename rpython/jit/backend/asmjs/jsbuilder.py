@@ -85,7 +85,13 @@ class ASMJSBuilder(object):
         else:
             if num < 0:
                 num = len(self.all_intvars)
-            varname = "i%d" % (num,)
+                varname = "i%d" % (num,)
+            else:
+                varname = "i%d" % (num,)
+                try:
+                    self.free_intvars.remove(varname)
+                except ValueError:
+                    pass
             self.all_intvars[varname] = 0
         return jsval.IntVar(varname)
 
@@ -101,7 +107,13 @@ class ASMJSBuilder(object):
         else:
             if num < 0:
                 num = len(self.all_doublevars)
-            varname = "f%d" % (num,)
+                varname = "f%d" % (num,)
+            else:
+                varname = "f%d" % (num,)
+                try:
+                    self.free_doublevars.remove(varname)
+                except ValueError:
+                    pass
             self.all_doublevars[varname] = 0.0
         return jsval.DoubleVar(varname)
 
@@ -265,9 +277,8 @@ class ASMJSBuilder(object):
     def emit_debug(self, msg, values=None):
         if SANITYCHECK:
             if we_are_translated():
-                self.emit("print(\"%s\"" % (msg,))
-            else:
-                self.emit("log(\"%s\"" % (msg,))
+                return #self.emit("print(\"%s\"" % (msg,))
+            self.emit("log(\"%s\"" % (msg,))
             if values:
                 for i in xrange(len(values)):
                     self.emit(",")
