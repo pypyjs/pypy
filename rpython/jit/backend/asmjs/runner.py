@@ -104,9 +104,10 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
-                # Ensure the frame has a valid gcmap.
-                gcmap = clt.compiled_blocks[0].initial_gcmap
-                self.set_frame_gcmap(ll_frame, gcmap)
+                # Ensure the frame has a valid gcmap, since there's
+                # no guarantee the trampoline won't collect.
+                # XXX TODO need a writebarrier on the frame?
+                frame.jf_gcmap = clt.compiled_blocks[0].initial_gcmap
                 # Invoke the trampoline to execute it.
                 self.set_frame_next_call(ll_frame, func_id, 0)
                 ll_frame_adr = self.cast_ptr_to_int(ll_frame)
@@ -119,28 +120,14 @@ class CPU_ASMJS(AbstractLLCPU):
 
         return execute_token
 
-    def set_frame_gcmap(self, ll_frame, gcmap):
-        offset = self.get_ofs_of_frame_field('jf_gcmap')
-        value = rffi.cast(lltype.Signed, gcmap)
-        self.write_int_at_mem(ll_frame, offset, WORD, 0, value)
-
     def set_frame_next_call(self, ll_frame, funcid, label):
-        # High 24 bits give the function id.
-        # Low 8 bits give the target label within that function.
-        assert funcid < 2**24
-        assert label < 0xFF
+        offset = self.get_ofs_of_frame_field("jf_extra_stack_depth")
         next_call = (funcid << 8) | label
-        offset = self.get_ofs_of_frame_field('jf_force_descr')
         self.write_int_at_mem(ll_frame, offset, WORD, 0, next_call)
 
     def get_frame_next_call(self, ll_frame):
-        offset = self.get_ofs_of_frame_field('jf_force_descr')
-        next_call = self.read_int_at_mem(ll_frame, offset, WORD, 0)
-        # Clear it immediately, as it's not a valid gcref.
-        self.write_int_at_mem(ll_frame, offset, WORD, 0, 0)
-        funcid = next_call >> 8
-        label = next_call & 0xFF
-        return (funcid, label)
+        offset = self.get_ofs_of_frame_field("jf_extra_stack_depth")
+        return self.read_int_at_mem(ll_frame, offset, WORD, 0)
 
     def get_execute_trampoline_adr(self):
         exeptr = llhelper(self._execute_trampoline_FUNCPTR,
@@ -151,15 +138,14 @@ class CPU_ASMJS(AbstractLLCPU):
 
         def execute_trampoline(ll_frame_adr):
             ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-            funcid, label = self.get_frame_next_call(ll_frame)
-            os.write(2, "EXECUTE TRAMPOLINE %d %d\n" % (funcid, label,))
+            next_call = self.get_frame_next_call(ll_frame)
+            funcid = next_call >> 8
             while funcid != 0:
+                label = next_call & 0xFF
                 ll_frame_adr = support.jitInvoke(funcid, label, ll_frame_adr)
                 ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-                funcid, label = self.get_frame_next_call(ll_frame)
-                if funcid:
-                    os.write(2, "  BOUNCE TRAMPOLINE %d %d\n" % (funcid, label,))
-            os.write(2, "  DONE TRAMPOLINE\n")
+                next_call = self.get_frame_next_call(ll_frame)
+                funcid = next_call >> 8
             return ll_frame_adr
  
         ARGS = [rffi.INT]

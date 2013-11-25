@@ -31,7 +31,7 @@ from rpython.rtyper.extfunc import register_external
 # transplier.
 
 
-def jsexternal(args, result):
+def jsexternal(args, result, **kwds):
     """Decorator to define stubbed-out external javascript functions.
 
     This decorator can be applied to a python function to register it as
@@ -40,7 +40,10 @@ def jsexternal(args, result):
     will link to the javascript function of the same name.
     """
     def do_register(func):
-        return rffi.llexternal(func.__name__, args, result, _callable=func)
+        kwds.setdefault('_callable', func)
+        kwds.setdefault('threadsafe', True)
+        kwds.setdefault('random_effects_on_gcobjs', False)
+        return rffi.llexternal(func.__name__, args, result, **kwds)
     return do_register
 
 
@@ -79,12 +82,15 @@ def jitCopy(srcId, dstId):
     _jitCompiledFunctions[dstId] = _jitCompiledFunctions[srcId]
 
 
-@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT)
+@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT,
+            _nowrapper=True, random_effects_on_gcobjs=True)
 def jitInvoke(funcid, label, frame):
     func = _jitCompiledFunctions.get(funcid, None)
     if func is None:
-        return 0
-    return int(func(label, frame))
+        res = 0
+    else:
+        res = int(func(label, frame))
+    return res
 
 
 @jsexternal([rffi.INT], lltype.Void)
@@ -707,7 +713,6 @@ class FOREIGN(object):
                 # raise any exceptions, but it will record them in a
                 # special private area of the ll2ctypes module.
                 res = functype(funcaddr)(*args)
-                import sys; print>>sys.stderr, "CALL DONE", res, ll2ctypes._callback_exc_info
                 if ll2ctypes._callback_exc_info is not None:
                     exc_typ, exc_val, exc_tb = ll2ctypes._callback_exc_info
                     ll2ctypes._callback_exc_info = None

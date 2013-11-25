@@ -54,8 +54,8 @@ class ASMJSBuilder(object):
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
         chunks.append('function F(label, frame){\n')
-        chunks.append('frame=frame|0;\n')
         chunks.append('label=label|0;\n')
+        chunks.append('frame=frame|0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
@@ -277,8 +277,9 @@ class ASMJSBuilder(object):
     def emit_debug(self, msg, values=None):
         if SANITYCHECK:
             if we_are_translated():
-                return #self.emit("print(\"%s\"" % (msg,))
-            self.emit("log(\"%s\"" % (msg,))
+                self.emit("print(\"%s\"" % (msg,))
+            else:
+                self.emit("log(\"%s\"" % (msg,))
             if values:
                 for i in xrange(len(values)):
                     self.emit(",")

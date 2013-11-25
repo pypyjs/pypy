@@ -101,12 +101,9 @@ class EmscriptenPlatform(BasePosix):
         return super(EmscriptenPlatform, self).execute(jsshell, args, *a, **k)
 
     def include_dirs_for_libffi(self):
-        # libffi not supported; maybe we can hack around it?
-        # For now we let the code read some defns out of the standard header.
-        return [os.path.dirname(__file__)]
+        return []
 
     def library_dirs_for_libffi(self):
-        # libffi not supported; maybe we can hack around it?
         return []
 
     def gen_makefile(self, *args, **kwds):

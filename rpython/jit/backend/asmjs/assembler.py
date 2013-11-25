@@ -472,7 +472,6 @@ class CompiledBlockASMJS(object):
                 # Necessary because we have no JITFRAME_FIXED_SIZE.
                 # But I don't think it should be needed in real life?
                 bldr.emit_store(js.zero, js.FrameSlotAddr(pos), typ)
-                bldr.emit_debug("LOADED ARG", [inputvars[i]])
 
     def emit_body(self, bldr):
         if SANITYCHECK:
@@ -567,7 +566,7 @@ class CompiledBlockASMJS(object):
             if isinstance(label, ConstInt):
                 assert label.getint() < 0xFF
         next_call = js.Or(js.LShift(funcid, js.ConstInt(8)), label)
-        addr = js.FrameForceDescrAddr(framevar)
+        addr = js.FrameNextCallAddr(framevar)
         bldr.emit_store(next_call, addr, js.Int32)
 
     def emit_store_gcmap(self, bldr, gcmap, frame=None, writebarrier=True):
@@ -725,8 +724,6 @@ class CompiledBlockASMJS(object):
         # We expend some modest effort to generate "nice" javascript code,
         # by e.g. folding constant expressions and eliminating temp variables.
         self.pos = 0
-        self.bldr.emit_debug("ENTER BLOCK %d" % (self.label,))
-        self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in self.inputargs])
         while self.pos < len(self.operations):
             op = self.operations[self.pos]
             step = 1
@@ -1047,7 +1044,6 @@ class CompiledBlockASMJS(object):
         addr = js.Plus(base, js.ConstInt(offset))
         typ = js.HeapType.from_size_and_sign(fieldsize, signed)
         self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
-        self.bldr.emit_debug("LOADED FIELD", [base, addr, self._get_jsval(op.result)])
 
     genop_getfield_raw = genop_getfield_gc
     genop_getfield_gc_pure = genop_getfield_gc
@@ -1071,7 +1067,6 @@ class CompiledBlockASMJS(object):
         addr = js.Plus(base, js.ConstInt(offset))
         typ = js.HeapType.from_size_and_sign(fieldsize, signed)
         self.bldr.emit_store(value, addr, typ)
-        self.bldr.emit_debug("STORED FIELD", [base, addr, value])
 
     genop_setfield_raw = genop_setfield_gc
 
@@ -1463,7 +1458,7 @@ class CompiledBlockASMJS(object):
             assert isinstance(target_clt, CompiledLoopTokenASMJS)
             # The GC-rewrite pass has allocated a frame and populated it,
             # but has not set a gcmap.  I'm not confident that our little
-            # execute-trampoline helper will not malloc, so set the gcmap
+            # execute-trampoline helper will not collect, so set the gcmap
             # that we have handily pre-compiled for entry to the loop.
             gcmap = target_clt.compiled_blocks[0].initial_gcmap
             self.emit_store_gcmap(self.bldr, gcmap, frame=frame)
@@ -1658,10 +1653,6 @@ class CompiledBlockASMJS(object):
         descr = op.getdescr()
         descr = cast_instance_to_gcref(descr)
         rgc._make_sure_does_not_move(descr)
-        if op.numargs() == 1:
-            self.bldr.emit_debug("FINISH %s ARG " % (op,), [self._get_jsval(op.getarg(0))])
-        else:
-            self.bldr.emit_debug("FINISH %s" % (op,))
         # Write return value into the frame.
         self._genop_write_output_args(op.getarglist())
         # Write the descr into the frame slot.
@@ -1776,9 +1767,6 @@ class CompiledBlockASMJS(object):
         descr._asmjs_faillocs = faillocs
         descr._asmjs_hasexc = self._guard_might_have_exception(op)
         with self.bldr.emit_if_block(test):
-            self.bldr.emit_debug("GUARD FAILED %s" % (op,))
-            self.bldr.emit_debug("  ARGS:", [self._get_jsval(a) for a in op.getarglist()])
-            self.bldr.emit_debug("  FAILARGS:", [self._get_jsval(a) for a in failargs])
             # Place the failargs into the appropriate inputvars, so that
             # the dynamically-generated code for the guard can find them.
             inputvars = self._get_inputvars_from_kinds(failkinds, self.bldr)

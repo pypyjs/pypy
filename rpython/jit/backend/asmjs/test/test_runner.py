@@ -38,26 +38,23 @@ class TestASMJSRunner(LLtypeBackendTest):
         cpu.setup_once()
         return cpu
 
-    def test_call(self):
-        py.test.xfail("XXX TODO some problem with ffi result_size?")
-
     def test_free_loop_and_bridges(self):
         py.test.xfail("XXX TODO we don't use the asmmemmgr thing")
 
-    def test_short_result_of_call_direct(self):
-        py.test.xfail("XXX TODO some janky compile problem")
+    #def test_short_result_of_call_direct(self):
+    #    py.test.xfail("XXX TODO some janky compile problem")
 
-    def test_short_result_of_call_compiled(self):
-        py.test.xfail("XXX TODO some janky compile problem")
+    #def test_short_result_of_call_compiled(self):
+    #    py.test.xfail("XXX TODO some janky compile problem")
 
     def test_compile_asmlen(self):
         py.test.skip("not relevant for asmjs?")
 
-    def test_call_to_c_function(self):
-        py.test.skip("c stdlib not available to asmjs?")
+    #def test_call_to_c_function(self):
+    #    py.test.xfail("XXX TODO some janky compile problem")
 
-    def test_call_to_c_function_with_callback(self):
-        py.test.skip("c stdlib not available to asmjs?")
+    #def test_call_to_c_function_with_callback(self):
+    #    py.test.skip("c stdlib not available to asmjs?")
 
     def test_execute_ptr_operation(self):
         cpu = self.cpu

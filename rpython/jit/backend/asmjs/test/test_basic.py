@@ -30,19 +30,3 @@ class TestBasic(JitASMJSMixin, test_ajit.BaseLLtypeTests):
 
     def test_ulonglong_mod(self):
         py.test.skip("not implemented yet; test requires longlong support")
-
-    def test_print(self):
-        if 'x86_64' in os.uname():
-            py.test.skip("not working on x86_64 host system")
-
-    def test_current_trace_length(self):
-        if 'x86_64' in os.uname():
-            py.test.skip("not working on x86_64 host system")
-
-    def test_max_unroll_loops(self):
-        if 'x86_64' in os.uname():
-            py.test.skip("not working on x86_64 host system")
-
-    def test_max_unroll_loops_retry_without_unroll(self):
-        if 'x86_64' in os.uname():
-            py.test.skip("not working on x86_64 host system")

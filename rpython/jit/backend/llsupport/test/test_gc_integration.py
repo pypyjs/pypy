@@ -846,7 +846,7 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
             # asmjs calls external functions as part of JIT compilation.
             # jitReserve(), jitRecompile(), jitInvoke() -> the target call.
             assert l == ['before', 'after', 'before', 'after',
-                         'before', 'before', 'after', 'after']
+                         'before', 'after']
         else:
             assert l == ['before', 'after']
 

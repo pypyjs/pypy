@@ -720,6 +720,13 @@ class FrameForceDescrAddr(_FrameFieldAddr):
         return cpu.get_ofs_of_frame_field("jf_force_descr")
 
 
+class FrameNextCallAddr(_FrameFieldAddr):
+    """ASMJSValue representing the address of frame.jf_extra_stack_depth."""
+
+    def calculate_offset(self, cpu):
+        return cpu.get_ofs_of_frame_field("jf_extra_stack_depth")
+
+
 class FrameGuardExcAddr(_FrameFieldAddr):
     """ASMJSValue representing the address of frame.jf_guard_exc."""
 
