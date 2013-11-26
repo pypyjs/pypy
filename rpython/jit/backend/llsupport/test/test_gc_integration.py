@@ -467,7 +467,7 @@ class WriteBarrierDescr(AbstractDescr):
     def get_write_barrier_fn(self, cpu):
         return self.write_barrier_fn
 
-# a copy of JITFRAM that has 'hdr' field for tests
+# a copy of JITFRAME that has 'hdr' field for tests
 
 def jitframe_allocate(frame_info):
     frame = lltype.malloc(JITFRAME, frame_info.jfi_frame_depth, zero=True)
@@ -813,8 +813,6 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
                 cpu.gc_ll_descr.gcrootmap.stack[0] = copied_stack[0]
             l.append("after")
 
-        invoke_around_extcall(before, after)
-
         def f(frame, x):
             # all the gc pointers are alive p1 -> p7 (but not p0)
             assert x == 1
@@ -837,18 +835,13 @@ class TestGcShadowstackDirect(BaseTestRegalloc):
         cpu.gc_ll_descr.init_nursery(100)
         cpu.setup_once()
         cpu.compile_loop(loop.inputargs, loop.operations, token)
+        invoke_around_extcall(before, after)
         args = [lltype.nullptr(llmemory.GCREF.TO) for i in range(7)]
         frame = cpu.execute_token(token, 1, *args)
         frame = rffi.cast(JITFRAMEPTR, frame)
         assert frame.jf_frame[0] == 2
         assert copied_stack[0] is not None
-        if self.cpu.backend_name.startswith('asmjs'):
-            # asmjs calls external functions as part of JIT compilation.
-            # jitReserve(), jitRecompile(), jitInvoke() -> the target call.
-            assert l == ['before', 'after', 'before', 'after',
-                         'before', 'after']
-        else:
-            assert l == ['before', 'after']
+        assert l == ['before', 'after']
 
     def test_call_may_force_gcmap(self):
         cpu = self.cpu

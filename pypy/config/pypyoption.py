@@ -51,7 +51,7 @@ working_js_modules = default_modules.copy()
 working_js_modules.update(dict.fromkeys(
     ["_md5", "_sha", "cStringIO", "itertools", "time", "rctime",
      "struct", "array", "binascii", "_collections", "_pypyjson",
-     "_warnings", "_csv"]
+     "_warnings", "_csv", "unicodedata", "_rawffi", "_ffi"]
 ))
 
 # XXX this should move somewhere else, maybe to platform ("is this posixish"

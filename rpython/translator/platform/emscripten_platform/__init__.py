@@ -34,6 +34,7 @@ class EmscriptenPlatform(BasePosix):
     so_ext = 'so'
     DEFAULT_CC = 'emcc'
     standalone_only = []
+    shared_only = []
 
     cflags = [
       # Misc helpful/sensible flags.
@@ -82,6 +83,9 @@ class EmscriptenPlatform(BasePosix):
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
       "-g2",
+      # Necessary for ctypes support.
+      "-s", "DLOPEN_SUPPORT=1",
+      "-s", "INCLUDE_FULL_LIBRARY=1",
     ]
 
     def execute(self, executable, args=None, *a, **k):
@@ -118,5 +122,10 @@ class EmscriptenPlatform(BasePosix):
         ldflags_def.value.extend([
           "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
           "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
+        #  "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
+          "--embed-file", os.path.join(str(pypy_root_dir), "pytest.py") + "@" + os.path.join(str(pypy_root_dir), "pytest.py")[1:],
         ])
         return m 
+
+    def _args_for_shared(self, args):
+        return args
