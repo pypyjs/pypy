@@ -2,6 +2,7 @@
 import os
 import textwrap
 
+from rpython.rlib.rarithmetic import intmask
 from rpython.memory.gctypelayout import GCData
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
