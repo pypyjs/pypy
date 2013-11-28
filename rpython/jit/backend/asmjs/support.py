@@ -18,12 +18,10 @@ import math
 import ctypes
 import struct
 import subprocess
-import tempfile
 
-from rpython.rlib.parsing.tree import Nonterminal, Symbol, RPythonVisitor
+from rpython.rlib.parsing.tree import RPythonVisitor
 from rpython.rlib.parsing.ebnfparse import parse_ebnf, make_parse_function
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi, ll2ctypes
-from rpython.rtyper.extfunc import register_external
+from rpython.rtyper.lltypesystem import lltype, rffi, ll2ctypes
 
 # First, we have the definitions of the javascript JIT helper functions.
 # These have a native javascript implementation when translated; when
@@ -142,14 +140,17 @@ def parse_asmjs(jssource):
     if _parse_asmjs is None:
         regexes, rules, ToAST = parse_ebnf(JSGRAMMAR)
         parse = make_parse_function(regexes, rules)
+
         def _parse_asmjs(jssource):
             return parse(jssource).visit(ToAST())[0]
+
     return _parse_asmjs(jssource)
 
 
 counter = 0
+
+
 def validate_asmjs(jssource):
-    #tf = tempfile.NamedTemporaryFile()
     global counter
     tf = open("/tmp/jit.asm.%d.js" % (counter,), "w")
     counter += 1
@@ -167,7 +168,7 @@ def validate_asmjs(jssource):
 def _int(v):
     try:
         return int(v)
-    except (OverflowError, ValueError), e:
+    except (OverflowError, ValueError):
         if str(v) not in ('inf', '-inf', 'nan'):
             raise
         return 0
@@ -176,17 +177,22 @@ def _int(v):
 def ToInt32(v):
     return ctypes.c_int32(_int(v)).value
 
+
 def ToInt16(v):
     return ctypes.c_int16(_int(v)).value
+
 
 def ToInt8(v):
     return ctypes.c_int8(_int(v)).value
 
+
 def ToUInt32(v):
     return ctypes.c_uint32(_int(v)).value
 
+
 def ToUInt16(v):
     return ctypes.c_uint16(_int(v)).value
+
 
 def ToUInt8(v):
     return ctypes.c_uint8(_int(v)).value
@@ -595,7 +601,7 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.emit(node.additional_info)
 
 
-def makeHeapView(format, convert=lambda x:x):
+def makeHeapView(format, convert=lambda x: x):
     """Given native-endian struct pack format, build a heapview class.
 
     This is a helper function to generate python equivalents of the javascript
@@ -645,7 +651,6 @@ class STDLIB(object):
     Float32Array = makeHeapView("f", NUM)
     Float64Array = makeHeapView("d", NUM)
 
-
     class Math(object):
 
         @staticmethod
@@ -679,7 +684,7 @@ class FOREIGN(object):
     will be available to the JIT-compiled code as runtime
     """
 
-    TYPEMAP = { "v": None, "i": ctypes.c_int32, "d": ctypes.c_double}
+    TYPEMAP = {"v": None, "i": ctypes.c_int32, "d": ctypes.c_double}
 
     tempDoublePtr = tempDoublePtr
 
@@ -706,6 +711,7 @@ class FOREIGN(object):
             argtypes = [self.TYPEMAP[c] for c in callsig[1:]]
             argconvs = [int if c == "i" else lambda a:a for c in callsig[1:]]
             functype = ctypes.CFUNCTYPE(restype, *argtypes)
+
             def dynCall(funcaddr, *args):
                 funcaddr = self._heap.validate_addr(funcaddr)
                 args = [conv(a) for (conv, a) in zip(argconvs, args)]
@@ -719,12 +725,15 @@ class FOREIGN(object):
                     raise exc_typ, exc_val, exc_tb
                 if callsig[0] != "v":
                     return NUM(res)
+
             return dynCall
         # Allow calling our own exported functions via ffi.
         if name.startswith("_jit") and name[1:] in globals():
             func = globals()[name[1:]]
+
             def callSupportFunc(*args):
                 return func(*map(int, args))
+
             return callSupportFunc
         raise AttributeError("Unknown foreign function: %s" % (name,))
 
@@ -885,5 +894,4 @@ callargs: expr ([","] expr)*;
 """
 
 if __name__ == "__main__":
-    import sys
     load_asmjs(open(sys.argv[1], "r").read())

@@ -1,16 +1,17 @@
 
-import os
 from rpython.rlib.unroll import unrolling_iterable
 from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
 from rpython.rtyper.llinterp import LLInterpreter
-from rpython.rtyper.annlowlevel import llhelper, cast_instance_to_gcref
+from rpython.rtyper.annlowlevel import llhelper
 from rpython.jit.backend.llsupport.llmodel import AbstractLLCPU
-from rpython.jit.backend.llsupport import jitframe
 from rpython.jit.metainterp import history
 
 from rpython.jit.backend.asmjs import support
-from rpython.jit.backend.asmjs.assembler import AssemblerASMJS, CompiledLoopTokenASMJS
-from rpython.jit.backend.asmjs.arch import WORD, SANITYCHECK
+from rpython.jit.backend.asmjs.assembler import (AssemblerASMJS,
+                                                 CompiledLoopTokenASMJS)
+from rpython.jit.backend.asmjs.arch import (WORD,
+                                            SANITYCHECK,
+                                            JITFRAME_FIXED_SIZE)
 
 
 class CPU_ASMJS(AbstractLLCPU):
@@ -24,7 +25,7 @@ class CPU_ASMJS(AbstractLLCPU):
     """
 
     IS_64_BIT = False
-    from rpython.jit.backend.asmjs.arch import JITFRAME_FIXED_SIZE
+    JITFRAME_FIXED_SIZE = JITFRAME_FIXED_SIZE
     supports_floats = True
     supports_singlefloats = False
     supports_longlong = False
@@ -147,7 +148,7 @@ class CPU_ASMJS(AbstractLLCPU):
                 next_call = self.get_frame_next_call(ll_frame)
                 funcid = next_call >> 8
             return ll_frame_adr
- 
+
         ARGS = [rffi.INT]
         EXEFUNCPTR = lltype.Ptr(lltype.FuncType(ARGS, rffi.INT))
         self._execute_trampoline_func = execute_trampoline

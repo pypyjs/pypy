@@ -2,14 +2,13 @@
 import os
 import textwrap
 
-from rpython.rlib.rarithmetic import intmask
 from rpython.memory.gctypelayout import GCData
 from rpython.rtyper.lltypesystem import lltype, rffi, llmemory
 from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.backend.llsupport.descr import unpack_fielddescr
 from rpython.jit.metainterp.history import (AbstractValue, Box, Const,
                                             INT, REF, FLOAT, ConstInt,
-                                            ConstFloat, ConstPtr)
+                                            ConstPtr)
 
 from rpython.jit.backend.asmjs.arch import SANITYCHECK, WORD
 
@@ -54,10 +53,10 @@ def istype(value, typ):
         return vtyp == Double
     if typ == Intish:
         return vtyp == Intish or vtyp == Int or vtyp == Signed \
-               or vtyp == Unsigned or vtyp == Fixnum
+            or vtyp == Unsigned or vtyp == Fixnum
     if typ == Int:
         return vtyp == Int or vtyp == Signed \
-               or vtyp == Unsigned or vtyp == Fixnum
+            or vtyp == Unsigned or vtyp == Fixnum
     if typ == Signed:
         return vtyp == Signed
     if typ == Unsigned:
@@ -66,7 +65,7 @@ def istype(value, typ):
         return vtyp == Fixnum
     os.write(2, "Unexpected jstype: %s\n" % (typ,))
     raise RuntimeError("Unexpected jstype: %s" % (typ,))
-    
+
 
 def _getint(value):
     if isinstance(value, ConstInt):
@@ -76,7 +75,7 @@ def _getint(value):
     os.write(2, "Unexpected jstype: %s\n" % (value,))
     raise RuntimeError("Unexpected jstype: %s" % (value,))
 
-    
+
 #  Singleton instances used to indicate the type of data being loaded from
 #  or stored to the heap.
 
@@ -649,7 +648,7 @@ class _CallFunc(ASMJSValue):
                         if istype(arg, Doublish):
                             arg = DoubleCast(arg)
                         else:
-                           arg = SignedCast(arg)
+                            arg = SignedCast(arg)
             js.emit_value(arg)
         js.emit(")")
 

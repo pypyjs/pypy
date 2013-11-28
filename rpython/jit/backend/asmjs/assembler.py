@@ -215,8 +215,8 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
                 # NB: if the first op is a label, this makes an empty block.
                 # That's OK for now; it might do some arg shuffling etc.
                 new_block = CompiledBlockASMJS(
-                  self, len(self.compiled_blocks), operations[start_op:i],
-                  intoken, inputargs, labeldescr, op.getarglist(),
+                    self, len(self.compiled_blocks), operations[start_op:i],
+                    intoken, inputargs, labeldescr, op.getarglist(),
                 )
                 self.compiled_blocks.append(new_block)
                 # Tell the label about its eventual location in the clt.
@@ -229,8 +229,8 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         # Make the final block, assuming we didn't end at a label.
         if start_op < len(operations):
             new_block = CompiledBlockASMJS(
-              self, len(self.compiled_blocks), operations[start_op:],
-              intoken, inputargs, None, []
+                self, len(self.compiled_blocks), operations[start_op:],
+                intoken, inputargs, None, []
             )
             self.compiled_blocks.append(new_block)
         # Rebuild the jitted code.
@@ -302,7 +302,7 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         # We check the depth of the frame at entry to the function.
         # If it's too small then we rellocate it via a helper.
         # XXX TODO: skip the check if no bridges have increased req depth.
-        if True: #self.frame_info.jfi_frame_depth > self.orig_frame_depth:
+        if True:  # self.frame_info.jfi_frame_depth > self.orig_frame_depth:
             req_depth = js.ConstInt(self.frame_info.jfi_frame_depth)
             cur_depth = js.HeapData(js.Int32, js.FrameSizeAddr())
             frame_too_small = js.LessThan(cur_depth, req_depth)
@@ -468,7 +468,7 @@ class CompiledBlockASMJS(object):
     def emit_body(self, bldr):
         if SANITYCHECK:
             assert len(self.compiled_fragments) == \
-                   len(self.compiled_faildescrs) + 1
+                len(self.compiled_faildescrs) + 1
         for i in xrange(len(self.compiled_faildescrs)):
             bldr.emit_fragment(self.compiled_fragments[i])
             self.emit_guard_body(bldr, self.compiled_faildescrs[i])
@@ -632,11 +632,13 @@ class CompiledBlockASMJS(object):
         bldr.emit_assignment(flagaddrvar, flagaddr)
         flagbyte = js.HeapData(js.UInt8, flagaddrvar)
         flagbytevar = bldr.allocate_intvar()
-        chk_flag = js.UnsignedCharCast(js.ConstInt(wbdescr.jit_wb_if_flag_singlebyte))
+        chk_flag = js.ConstInt(wbdescr.jit_wb_if_flag_singlebyte)
+        chk_flag = js.UnsignedCharCast(chk_flag)
         chk_card = js.zero
         flag_has_cards = js.zero
         if card_marking:
-            chk_card = js.UnsignedCharCast(js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte))
+            chk_card = js.ConstInt(wbdescr.jit_wb_cards_set_singlebyte)
+            chk_card = js.UnsignedCharCast(chk_card)
             flag_has_cards = js.And(flagbytevar, chk_card)
         flag_needs_wb = js.And(flagbytevar, js.Or(chk_flag, chk_card))
         # Check if we actually need to establish a writebarrier.
@@ -1747,8 +1749,8 @@ class CompiledBlockASMJS(object):
         assert isinstance(descr, AbstractFailDescr)
         failargs = op.getfailargs()
         failkinds = [box.type if box else HOLE for box in failargs]
-        faillocs = self._get_framelocs_from_kinds(failkinds,
-                                               self.forced_spill_frame_offset)
+        spill_offset = self.forced_spill_frame_offset
+        faillocs = self._get_framelocs_from_kinds(failkinds, spill_offset)
         descr._asmjs_failkinds = failkinds
         descr._asmjs_faillocs = faillocs
         descr._asmjs_hasexc = self._guard_might_have_exception(op)
@@ -1800,7 +1802,6 @@ class CompiledBlockASMJS(object):
             return
         pos_exctyp = js.ConstInt(cpu.pos_exception())
         pos_excval = js.ConstInt(cpu.pos_exc_value())
-        exctyp = js.HeapData(js.Int32, pos_exctyp)
         excval = js.HeapData(js.Int32, pos_excval)
         # Store the exception on the frame, and clear it.
         self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
@@ -1854,7 +1855,8 @@ class CompiledBlockASMJS(object):
         with self.bldr.emit_else_block():
             # If we did, we have to call into the GC for a collection.
             # The tests sometimes require that we pass along the jitfame.
-            mallocfn = rffi.cast(lltype.Signed, self.clt.assembler.gc_malloc_nursery_addr)
+            mallocfnaddr = self.clt.assembler.gc_malloc_nursery_addr
+            mallocfn = rffi.cast(lltype.Signed, mallocfnaddr)
             if hasattr(gc_ll_descr, 'passes_frame'):
                 callsig = "iii"
                 args = [sizevar, js.frame]

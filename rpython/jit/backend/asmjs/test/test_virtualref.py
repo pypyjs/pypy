@@ -1,5 +1,3 @@
-import os
-import py
 from rpython.jit.metainterp.test.test_virtualref import VRefTests
 from rpython.jit.backend.asmjs.test.test_basic import JitASMJSMixin
 

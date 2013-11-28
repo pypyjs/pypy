@@ -252,7 +252,6 @@ def Func3(EnumParIn):
     if EnumLoc == Ident3: return TRUE
     return FALSE
 
-
 if __name__ == '__main__':
     import sys
     def error(msg):

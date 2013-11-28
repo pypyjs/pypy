@@ -1,4 +1,3 @@
-import os
 import py
 from rpython.jit.backend.detect_cpu import getcpuclass
 from rpython.jit.metainterp.warmspot import ll_meta_interp
