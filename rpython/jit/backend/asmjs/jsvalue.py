@@ -9,7 +9,7 @@ from rpython.rtyper.lltypesystem.lloperation import llop
 from rpython.jit.backend.llsupport.descr import unpack_fielddescr
 from rpython.jit.metainterp.history import (AbstractValue, Box, Const,
                                             INT, REF, FLOAT, ConstInt,
-                                            ConstPtr)
+                                            ConstPtr, ConstFloat)
 
 from rpython.jit.backend.asmjs.arch import SANITYCHECK, WORD
 
