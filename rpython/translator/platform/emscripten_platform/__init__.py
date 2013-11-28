@@ -1,6 +1,7 @@
 import py, os
 
-from rpython.translator.platform.posix import BasePosix, rpydir
+from rpython.translator.platform.posix import BasePosix, rpydir, GnuMakefile
+from rpython.translator.platform import log, _run_subprocess
 
 
 pypy_root_dir = str(py.path.local(rpydir).join('..'))
@@ -36,6 +37,16 @@ class EmscriptenPlatform(BasePosix):
     standalone_only = []
     shared_only = []
 
+    # Environment variables required for proper compilation.
+    # XXX TODO: it would be more reliable to set these via command-line
+    extra_environ = {
+        # PyPy allocates at wordsize boundaries, so we can't assume that
+        # doubles are properly aligned.  This forces emscripten to take
+        # more care when loading/storing doubles.
+        # XXX TODO: fix pypy to do properly-aligned allocations
+        "EMCC_LLVM_TARGET": "i386-pc-linux-gnu",
+    }
+
     cflags = [
       # Misc helpful/sensible flags.
       #"-s", "VERBOSE=1",
@@ -45,7 +56,15 @@ class EmscriptenPlatform(BasePosix):
       # These are things that we've found to work OK with the generated code.
       # Try switching them off if the resulting javascript mis-behaves.
       "-O2",
-      "-s", "FORCE_ALIGNED_MEMORY=1",
+      # Things to try:
+      #    This *should* be ok, but needs extensive testing.
+      #    "-s", "FUNCTION_POINTER_ALIGNMENT=1",
+      #    This may be worth trying for a small speedup.
+      #    "-s", "CORRECT_OVERFLOWS=0",
+      #    This may be worth trying for a small speedup.
+      #    "-s", "CORRECT_SIGNS=0",
+      #    This may be worth trying for a small speedup.
+      #    "-s", "ASSERTIONS=0",
       # Some parts of the JIT assume that a function is uniquely identified
       # by its pointer.  This makes it so, at the cost of a lot of extra
       # padding in the function type tables.
@@ -53,12 +72,11 @@ class EmscriptenPlatform(BasePosix):
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
       "-s", "EXPORT_ALL=1",
-      # Growable memory is not compatible with asm.js.
+      # Growable memory is not compatible with asm.js yet.
       # Set it to the largest value that seems to be supported by nodejs.
       # XXX TODO: figure out a better memory-size story.
       # XXX TODO: automatically limit the GC to this much memory.
       # XXX TODO: ensure that pypy GC can detect when this runs out.
-      #"-s", "ALLOW_MEMORY_GROWTH=1",
       "-s", "TOTAL_MEMORY=536870912",
       # Some dummy includes to convince things to compile properly.
       # XXX TODO: only include these when needed.
@@ -84,11 +102,20 @@ class EmscriptenPlatform(BasePosix):
       # Useful for debugging, but turn this off in production.
       "-g2",
       # Necessary for ctypes support.
-      "-s", "DLOPEN_SUPPORT=1",
-      "-s", "INCLUDE_FULL_LIBRARY=1",
+      #"-s", "DLOPEN_SUPPORT=1",
+      #"-s", "INCLUDE_FULL_LIBRARY=1",
+      # XXX TODO: use DEFAULT_LIBRARY_FUNCS_TO_INCLUDE to force the ffi lib
     ]
 
-    def execute(self, executable, args=None, *a, **k):
+    def __init__(self, *args, **kwds):
+        os.environ.update(self.extra_environ)
+        super(EmscriptenPlatform, self).__init__(*args, **kwds)
+
+    def execute(self, executable, args=None, env=None, *a, **k):
+        if env is None:
+            os.environ.update(self.extra_environ)
+        else:
+            env.update(self.extra_environ)
         # The generated file is just javascript, so it's not executable.
         # Instead we arrange for it to be run with a javascript shell.
         if args is None:
@@ -102,7 +129,8 @@ class EmscriptenPlatform(BasePosix):
             jsshell = find_executable("node")
             if jsshell is None:
                 raise RuntimeError("Could not find javascript shell")
-        return super(EmscriptenPlatform, self).execute(jsshell, args, *a, **k)
+        super_cls = super(EmscriptenPlatform, self)
+        return super_cls.execute(jsshell, args, env, *a, **k)
 
     def include_dirs_for_libffi(self):
         return []
@@ -126,6 +154,17 @@ class EmscriptenPlatform(BasePosix):
           "--embed-file", os.path.join(str(pypy_root_dir), "pytest.py") + "@" + os.path.join(str(pypy_root_dir), "pytest.py")[1:],
         ])
         return m 
+
+    def execute_makefile(self, path_to_makefile, extra_opts=[]):
+        if isinstance(path_to_makefile, GnuMakefile):
+            path = path_to_makefile.makefile_dir
+        else:
+            path = path_to_makefile
+        log.execute('make %s in %s' % (" ".join(extra_opts), path))
+        env = os.environ.copy()
+        returncode, stdout, stderr = _run_subprocess(
+            self.make_cmd, ['-C', str(path)] + extra_opts, env=env)
+        self._handle_error(returncode, stdout, stderr, path.join('make'))
 
     def _args_for_shared(self, args):
         return args
