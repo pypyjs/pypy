@@ -6,6 +6,8 @@ from rpython.rlib.rarithmetic import r_uint, intmask
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.jit.backend.llsupport import symbolic, jitframe, rewrite
 from rpython.jit.backend.llsupport.regalloc import compute_vars_longevity
+from rpython.jit.backend.llsupport.gcmap import allocate_gcmap
+from rpython.jit.backend.llsupport.asmmemmgr import MachineDataBlockWrapper
 from rpython.jit.backend.llsupport.descr import (unpack_fielddescr,
                                                  unpack_arraydescr,
                                                  unpack_interiorfielddescr,
@@ -45,20 +47,20 @@ def reacquire_gil_shadowstack():
         after()
 
 
-# XXX TODO: this is workaround for my inability to get concrete descrs
-# of high-leveltypes.  I attach a low-level type to then and use descrs
-# off that.  It's pretty dumb.  How to do this better?
-
-INVALIDATION_COUNTER = lltype.Struct(
-    "INVALIDATIONCOUNTER",
+INVALIDATION = lltype.Struct(
+    "INVALIDATION",
     ("counter", lltype.Signed)
 )
+INVALIDATION_PTR = lltype.Ptr(INVALIDATION)
+INVALIDATION_SIZE = WORD
 
 
-ASMJSGUARDTOKEN = lltype.GcStruct(
+ASMJSGUARDTOKEN = lltype.Struct(
     "ASMJSGUARDTOKEN",
     ("label", lltype.Signed)
 )
+ASMJSGUARDTOKEN_PTR = lltype.Ptr(ASMJSGUARDTOKEN)
+ASMJSGUARDTOKEN_SIZE = WORD
 
 
 class AssemblerASMJS(object):
@@ -148,9 +150,11 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         self.inlined_gcrefs = []
         self.redirected_funcids = None
         self.redirected_to = 0
-        self.invalidation = lltype.malloc(INVALIDATION_COUNTER, flavor="raw")
+        self.datablockwrapper = MachineDataBlockWrapper(self.cpu.asmmemmgr, [])
+        invalidationptr = self.malloc(INVALIDATION_SIZE)
+        self.invalidation = rffi.cast(INVALIDATION_PTR, invalidationptr)
         self.invalidation.counter = 0
-        frame_info = lltype.malloc(jitframe.JITFRAMEINFO, flavor="raw")
+        frame_info = self.malloc(jitframe.JITFRAMEINFO_SIZE)
         self.frame_info = rffi.cast(jitframe.JITFRAMEINFOPTR, frame_info)
         self.frame_info.clear()
         self.orig_frame_depth = -1
@@ -158,9 +162,15 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
 
     def __del__(self):
         CompiledLoopToken.__del__(self)
-        lltype.free(self.invalidation, flavor="raw")
-        lltype.free(self.frame_info, flavor="raw")
         support.jitFree(self.compiled_funcid)
+        allblocks = self.datablockwrapper.allblocks
+        self.datablockwrapper = None
+        for rawstart, rawstop in allblocks:
+            self.cpu.gc_ll_descr.freeing_block(rawstart, rawstop)
+            self.cpu.asmmemmgr.free(rawstart, rawstop)
+
+    def malloc(self, size, alignment=WORD):
+        return self.datablockwrapper.malloc_aligned(size, WORD)
 
     def ensure_frame_depth(self, required_offset):
         if SANITYCHECK:
@@ -179,8 +189,6 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         # If the intoken is a guard, it gets a new label
         if intoken is not None:
             if isinstance(intoken, AbstractFailDescr):
-                if SANITYCHECK:
-                    assert intoken._asmjs_clt == self
                 intoken._asmjs_gtoken.label = len(self.compiled_blocks)
         # Split the new operations up into labelled blocks.
         start_op = 0
@@ -191,16 +199,12 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
             # allocated a guardtoken object.  They initially get
             # label = 0, which is changed when bridged.
             if op.is_guard():
-                guardtoken = lltype.malloc(ASMJSGUARDTOKEN, flavor="gc")
+                guardtokenptr = self.malloc(ASMJSGUARDTOKEN_SIZE)
+                guardtoken = rffi.cast(ASMJSGUARDTOKEN_PTR, guardtokenptr)
                 guardtoken.label = 0
-                if we_are_translated():
-                    guardtokenref = cast_instance_to_gcref(guardtoken)
-                    rgc._make_sure_does_not_move(guardtokenref)
-                else:
-                    rgc._make_sure_does_not_move(guardtoken)
                 faildescr = op.getdescr()
                 assert isinstance(faildescr, AbstractFailDescr)
-                faildescr._asmjs_clt = self
+                faildescr._asmjs_funcid = self.compiled_funcid
                 faildescr._asmjs_gtoken = guardtoken
             # Label descrs start a new block.
             # They need to be told the current funcid.
@@ -216,7 +220,7 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
                 )
                 self.compiled_blocks.append(new_block)
                 # Tell the label about its eventual location in the clt.
-                labeldescr._asmjs_clt = self
+                labeldescr._asmjs_funcid = self.compiled_funcid
                 labeldescr._asmjs_label = len(self.compiled_blocks)
                 # Start a new block from this label.
                 start_op = i
@@ -341,11 +345,11 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
 
         # Compile the replacement source code for our function.
         jssrc = bldr.finish()
-        os.write(2, jssrc)
         support.jitRecompile(self.compiled_funcid, jssrc)
         if self.redirected_funcids is not None:
             for dstid in self.redirected_funcids:
                 support.jitCopy(self.compiled_funcid, dstid)
+        self.datablockwrapper.done()
 
 
 class CompiledBlockASMJS(object):
@@ -354,6 +358,7 @@ class CompiledBlockASMJS(object):
                  intoken, inputargs, outtoken, outputargs):
         self.clt = clt
         self.cpu = clt.cpu
+        self.funcid = clt.compiled_funcid
         self.label = label
 
         # Remember value of invalidation counter when this loop was created.
@@ -393,9 +398,6 @@ class CompiledBlockASMJS(object):
                 gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
             self.initial_gcmap = gcmap
 
-        # A list to hold references to any other gcmaps we might generate.
-        self.compiled_gcmaps = []
-
         # Ensure the block ends with an explicit jump or return.
         # This simplifies calculation of box longevity below.
         FINAL_OPS = (rop.JUMP, rop.FINISH)
@@ -425,34 +427,24 @@ class CompiledBlockASMJS(object):
         self.forced_spill_frame_offset = 0
         self.box_to_jsval = {}
 
-    def __del__(self):
-        lltype.free(self.initial_gcmap, flavor="raw")
-        for gcmap in self.compiled_gcmaps:
-            lltype.free(gcmap, flavor="raw")
-
     def allocate_gcmap(self, offset):
-        frame_size = r_uint(offset // WORD)
-        gcmap_size = (frame_size // WORD // 8) + 1
-        rawgcmap = lltype.malloc(jitframe.GCMAP, gcmap_size, flavor="raw")
-        gcmap = rffi.cast(lltype.Ptr(jitframe.GCMAP), rawgcmap)
-        for i in xrange(gcmap_size):
-            gcmap[i] = r_uint(0)
-        return gcmap
+        frame_size = offset // WORD
+        return allocate_gcmap(self.clt, frame_size, 0)
 
     def allocate_gcmap_from_kinds(self, kinds, framelocs):
         assert len(kinds) == len(framelocs)
-        if len(kinds) == 0:
-            return jitframe.NULLGCMAP
-        gcmap = self.allocate_gcmap(framelocs[-1] + WORD)
-        num_refs = 0
+        # Check whether a gcmap is actually needed.
         for i in xrange(len(kinds)):
             if kinds[i] == REF:
-                num_refs += 1
-                pos = r_uint(framelocs[i] // WORD)
+                break
+        else:
+            return jitframe.NULLGCMAP
+        # Allocate and populate one appropriately.
+        gcmap = self.allocate_gcmap(framelocs[-1] + WORD)
+        for i in xrange(len(kinds)):
+            if kinds[i] == REF:
+                pos = framelocs[i] // WORD
                 gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
-        if num_refs == 0:
-            lltype.free(gcmap, flavor="raw")
-            gcmap = jitframe.NULLGCMAP
         return gcmap
 
     # Methods for emitting our pre-compiled fragments into the loop.
@@ -522,7 +514,7 @@ class CompiledBlockASMJS(object):
                 # Directly re-invoke the new version of this function.
                 # We can't use the trampoline here, as there may be
                 # an active exception that the guard must capture.
-                funcid = js.ConstInt(self.clt.compiled_funcid)
+                funcid = js.ConstInt(self.funcid)
                 call = js.CallFunc("jitInvoke", [funcid, label, js.frame])
                 bldr.emit_assignment(js.frame, call)
                 bldr.emit_exit()
@@ -688,7 +680,8 @@ class CompiledBlockASMJS(object):
                 offset += typ.size - alignment
             locations[i] = offset
             offset += typ.size
-        self.clt.ensure_frame_depth(offset)
+        if self.clt is not None:
+            self.clt.ensure_frame_depth(offset)
         return locations
 
     def _get_inputvars_from_kinds(self, kinds, bldr=None):
@@ -768,14 +761,11 @@ class CompiledBlockASMJS(object):
                 self._maybe_free_boxvar(op.getarg(j))
             self._maybe_free_boxvar(op.result)
             self.pos += step
-        # Safety net to prevent infinite loop.
-        # Real code should never reach here, but tests generate some
-        # partial traces that don't have a proper FINISH or JUMP at end.
-        if SANITYCHECK:
-            self.bldr.emit_exit()
+
         # Capture the final fragment.
         fragment = self.bldr.capture_fragment()
         self.compiled_fragments.append(fragment)
+
         # Clear code-generation info so that we don't hold refs to it.
         self.bldr = None
         self.inputargs = None
@@ -786,6 +776,7 @@ class CompiledBlockASMJS(object):
         self.spilled_frame_offset = 0
         self.forced_spill_frame_offset = 0
         self.box_to_jsval = None
+        self.clt = None
 
     def _get_jsval(self, jitval):
         if isinstance(jitval, Box):
@@ -912,7 +903,8 @@ class CompiledBlockASMJS(object):
                 offset += typ.size - alignment
             locations[i] = offset
             offset += typ.size
-        self.clt.ensure_frame_depth(offset)
+        if self.clt is not None:
+            self.clt.ensure_frame_depth(offset)
         return locations
 
     def _genop_spill_to_frame(self, box, offset=-1):
@@ -1566,13 +1558,9 @@ class CompiledBlockASMJS(object):
         # For jumps to a different function, we spill to the frame.
         descr = op.getdescr()
         assert isinstance(descr, TargetToken)
-        target_clt = descr._asmjs_clt
-        target_funcid = target_clt.compiled_funcid
+        target_funcid = descr._asmjs_funcid
         target_label = descr._asmjs_label
-        target_block = target_clt.compiled_blocks[target_label]
-        if SANITYCHECK:
-            assert op.numargs() == len(target_block.inputlocs)
-        if target_clt != self.clt:
+        if target_funcid != self.funcid:
             # Jump to some other loop.
             # XXX TODO: update frame depth to be suitable for target loop.
             comment = "JUMP TO ANOTHER LOOP [%d %d]"
@@ -1743,7 +1731,7 @@ class CompiledBlockASMJS(object):
 
     def genop_guard_not_invalidated(self, op):
         translate_support_code = self.cpu.translate_support_code
-        offset, size = symbolic.get_field_token(INVALIDATION_COUNTER,
+        offset, size = symbolic.get_field_token(INVALIDATION,
                                                 "counter",
                                                 translate_support_code)
         assert size == js.Int32.size
@@ -1757,8 +1745,6 @@ class CompiledBlockASMJS(object):
     def _genop_guard_failure(self, test, op, faillocs=None):
         descr = op.getdescr()
         assert isinstance(descr, AbstractFailDescr)
-        if SANITYCHECK:
-            assert descr._asmjs_clt == self.clt
         failargs = op.getfailargs()
         failkinds = [box.type if box else HOLE for box in failargs]
         faillocs = self._get_framelocs_from_kinds(failkinds,
@@ -1808,11 +1794,13 @@ class CompiledBlockASMJS(object):
             self._genop_propagate_exception()
 
     def _genop_propagate_exception(self):
+        self.bldr.emit_comment("PROPAGATE EXCEPTION")
         cpu = self.cpu
         if not cpu.propagate_exception_descr:
             return
         pos_exctyp = js.ConstInt(cpu.pos_exception())
         pos_excval = js.ConstInt(cpu.pos_exc_value())
+        exctyp = js.HeapData(js.Int32, pos_exctyp)
         excval = js.HeapData(js.Int32, pos_excval)
         # Store the exception on the frame, and clear it.
         self.bldr.emit_store(excval, js.FrameGuardExcAddr(), js.Int32)
@@ -1902,15 +1890,17 @@ class CompiledBlockASMJS(object):
                                  js.IMul(lengthvar, js.ConstInt(itemsize)))
         totalsize = self.bldr.allocate_intvar()
         self.bldr.emit_assignment(totalsize, calc_totalsize)
-        # Round up the total size to a whole multiple of wordize.
+        # Round up the total size to a whole multiple of base alignment size.
+        # XXX TODO: do this via bit-fiddling for moar speed.
         if itemsize % WORD != 0:
+            padalign = js.word
             padsize = self.bldr.allocate_intvar()
             self.bldr.emit_assignment(padsize,
-                                      js.Mod(totalsize, js.word))
+                                      js.Mod(totalsize, padalign))
             with self.bldr.emit_if_block(js.NotEqual(padsize, js.zero)):
                 self.bldr.emit_assignment(totalsize,
                                           js.Plus(totalsize,
-                                                  js.Minus(js.word, padsize)))
+                                                  js.Minus(padalign, padsize)))
             self.bldr.free_intvar(padsize)
         # This is essentially an in-lining of MiniMark.malloc_fixedsize_clear()
         nfree_addr = js.ConstInt(gc_ll_descr.get_nursery_free_addr())
@@ -1971,20 +1961,17 @@ class CompiledBlockASMJS(object):
 
     def _genop_store_gcmap(self, writebarrier=True):
         """Push a gcmap representing current spilled state of frame."""
-        # Make a new gcmap sized to match current size of frame.
-        gcmap = self.allocate_gcmap(self.spilled_frame_offset)
-        # Set a bit for every REF that has been spilled.
-        num_refs = 0
+        # Check if a gcmap is actually needed.
+        gcmap = jitframe.NULLGCMAP
         for pos, box in self.spilled_frame_values.iteritems():
             if box and box.type == REF:
-                pos = r_uint(pos // WORD)
-                gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
-                num_refs += 1
-        if num_refs > 0:
-            self.compiled_gcmaps.append(gcmap)
-        else:
-            lltype.free(gcmap, flavor="raw")
-            gcmap = jitframe.NULLGCMAP
+                gcmap = self.allocate_gcmap(self.spilled_frame_offset)
+        # Set a bit for every REF that has been spilled.
+        if gcmap != jitframe.NULLGCMAP:
+            for pos, box in self.spilled_frame_values.iteritems():
+                if box and box.type == REF:
+                    pos = pos // WORD
+                    gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
         self.emit_store_gcmap(self.bldr, gcmap, writebarrier=writebarrier)
 
     def genop_debug_merge_point(self, op):
