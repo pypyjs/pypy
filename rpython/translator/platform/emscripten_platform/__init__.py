@@ -72,12 +72,12 @@ class EmscriptenPlatform(BasePosix):
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
       "-s", "EXPORT_ALL=1",
-      # Growable memory is not compatible with asm.js yet.
-      # Set it to the largest value that seems to be supported by nodejs.
+      # Sadly, asmjs requires a fixed pre-allocated array for memory.
+      # We default to a modest 64MB; this can be changed in the JS at runtime.
       # XXX TODO: figure out a better memory-size story.
       # XXX TODO: automatically limit the GC to this much memory.
       # XXX TODO: ensure that pypy GC can detect when this runs out.
-      "-s", "TOTAL_MEMORY=536870912",
+      "-s", "TOTAL_MEMORY=67108864",
       # Some dummy includes to convince things to compile properly.
       # XXX TODO: only include these when needed.
       "-I", os.path.dirname(__file__),
@@ -86,7 +86,7 @@ class EmscriptenPlatform(BasePosix):
       "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
       # PyPy usually produces a couple of very large functions, particularly
       # with the JIT included.  Try to break them up a little.
-      "-s", "OUTLINING_LIMIT=150000",
+      "-s", "OUTLINING_LIMIT=70000",
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
@@ -100,7 +100,7 @@ class EmscriptenPlatform(BasePosix):
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
-      "-g2",
+      #"-g2",
       # Necessary for ctypes support.
       #"-s", "DLOPEN_SUPPORT=1",
       #"-s", "INCLUDE_FULL_LIBRARY=1",
@@ -137,23 +137,6 @@ class EmscriptenPlatform(BasePosix):
 
     def library_dirs_for_libffi(self):
         return []
-
-    def gen_makefile(self, *args, **kwds):
-        m = super(EmscriptenPlatform, self).gen_makefile(*args, **kwds)
-        # Embed parts of the build dir as files in the final executable.
-        # This is necessary so the pypy interpreter can find its files,
-        # but is useless for generic rpython apps.
-        # XXX TODO: find a more elegant way to achieve this only when needed.
-        # There's apparently a "VFS" system under development for emscripten
-        # which might make the need for this go away.
-        ldflags_def = m.lines[m.defs["LDFLAGS"]]
-        ldflags_def.value.extend([
-          "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
-          "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
-        #  "--embed-file", os.path.join(str(pypy_root_dir), "rpython") + "@" + os.path.join(str(pypy_root_dir), "rpython")[1:],
-          "--embed-file", os.path.join(str(pypy_root_dir), "pytest.py") + "@" + os.path.join(str(pypy_root_dir), "pytest.py")[1:],
-        ])
-        return m 
 
     def execute_makefile(self, path_to_makefile, extra_opts=[]):
         if isinstance(path_to_makefile, GnuMakefile):
