@@ -339,7 +339,7 @@ class GcRewriterAssembler(object):
         """Try to generate or update a CALL_MALLOC_NURSERY.
         If that fails, generate a plain CALL_MALLOC_GC instead.
         """
-        size = self.round_up_for_allocation(size)
+        size = self.gc_ll_descr.round_up_for_allocation(size)
         if not self.gc_ll_descr.can_use_nursery_malloc(size):
             return False
         #

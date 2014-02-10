@@ -92,6 +92,19 @@ class GcLLDescription(GcCache):
     def gc_malloc_unicode(self, num_elem):
         return self._bh_malloc_array(num_elem, self.unicode_descr)
 
+    def round_up_for_allocation(self, size):
+        if not self.round_up:
+            return size
+        if self.translate_support_code:
+            from rpython.rtyper.lltypesystem import llarena
+            return llarena.round_up_for_allocation(
+                size, self.minimal_size_in_nursery)
+        else:
+            # non-translated: do it manually
+            # assume that "self.gc_ll_descr.minimal_size_in_nursery" is 2 WORDs
+            size = max(size, 2 * WORD)
+            return (size + WORD-1) & ~(WORD-1)     # round up
+
     def _record_constptrs(self, op, gcrefs_output_list):
         for i in range(op.numargs()):
             v = op.getarg(i)
@@ -224,7 +237,8 @@ class GcLLDescr_boehm(GcLLDescription):
                                [lltype.Signed] * 4)
 
     def _bh_malloc(self, sizedescr):
-        return self.malloc_fixedsize(sizedescr.size)
+        size = self.round_up_for_allocation(sizedescr.size)
+        return self.malloc_fixedsize(size)
 
     def _bh_malloc_array(self, num_elem, arraydescr):
         return self.malloc_array(arraydescr.basesize, num_elem,
@@ -490,8 +504,9 @@ class GcLLDescr_framework(GcLLDescription):
         llop1 = self.llop1
         type_id = llop.extract_ushort(llgroup.HALFWORD, sizedescr.tid)
         check_typeid(type_id)
+        size = self.round_up_for_allocation(sizedescr.size)
         return llop1.do_malloc_fixedsize_clear(llmemory.GCREF,
-                                               type_id, sizedescr.size,
+                                               type_id, size,
                                                False, False, False)
 
     def _bh_malloc_array(self, num_elem, arraydescr):

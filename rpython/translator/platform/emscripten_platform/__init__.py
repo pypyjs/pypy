@@ -37,40 +37,26 @@ class EmscriptenPlatform(BasePosix):
     standalone_only = []
     shared_only = []
 
-    # Environment variables required for proper compilation.
-    # XXX TODO: it would be more reliable to set these via command-line
-    extra_environ = {
-        # PyPy allocates at wordsize boundaries, so we can't assume that
-        # doubles are properly aligned.  This forces emscripten to take
-        # more care when loading/storing doubles.
-        # XXX TODO: fix pypy to do properly-aligned allocations
-        "EMCC_LLVM_TARGET": "i386-pc-linux-gnu",
-    }
-
     cflags = [
       # Misc helpful/sensible flags.
-      #"-s", "VERBOSE=1",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
       # Optimizations!
       # These are things that we've found to work OK with the generated code.
       # Try switching them off if the resulting javascript mis-behaves.
-      "-O2",
-      # Things to try:
-      #    This *should* be ok, but needs extensive testing.
-      #    "-s", "FUNCTION_POINTER_ALIGNMENT=1",
-      #    This may be worth trying for a small speedup.
-      #    "-s", "CORRECT_OVERFLOWS=0",
-      #    This may be worth trying for a small speedup.
-      #    "-s", "CORRECT_SIGNS=0",
-      #    This may be worth trying for a small speedup.
-      #    "-s", "ASSERTIONS=0",
+      "-O3",
+      "-s", "FORCE_ALIGNED_MEMORY=1",
+      "-s", "FUNCTION_POINTER_ALIGNMENT=1",
+      "-s", "CORRECT_OVERFLOWS=0",
+      "-s", "CORRECT_SIGNS=0",
+      "-s", "ASSERTIONS=0",
       # Some parts of the JIT assume that a function is uniquely identified
       # by its pointer.  This makes it so, at the cost of a lot of extra
       # padding in the function type tables.
       "-s", "ALIASING_FUNCTION_POINTERS=0",
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
+      # XXX TODO: e.g. just export the defined entrypoints somehow.
       "-s", "EXPORT_ALL=1",
       # Sadly, asmjs requires a fixed pre-allocated array for memory.
       # We default to a modest 64MB; this can be changed in the JS at runtime.
@@ -84,9 +70,6 @@ class EmscriptenPlatform(BasePosix):
       # For compiling with JIT.
       # XXX TODO: only include this when jit is enabled.
       "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
-      # PyPy usually produces a couple of very large functions, particularly
-      # with the JIT included.  Try to break them up a little.
-      "-s", "OUTLINING_LIMIT=70000",
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
@@ -100,22 +83,16 @@ class EmscriptenPlatform(BasePosix):
     link_flags = cflags + [
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
-      #"-g2",
+      "-g2",
       # Necessary for ctypes support.
       #"-s", "DLOPEN_SUPPORT=1",
       #"-s", "INCLUDE_FULL_LIBRARY=1",
       # XXX TODO: use DEFAULT_LIBRARY_FUNCS_TO_INCLUDE to force the ffi lib
+      # XXX TODO: something like this with just the entry-points we want
+      #-s EXPORTED_FUNCTIONS="['_main', '_free', '_pypy_execute_source', '_pypy_setup_home', '_RPython_StartupCode']"\
     ]
 
-    def __init__(self, *args, **kwds):
-        os.environ.update(self.extra_environ)
-        super(EmscriptenPlatform, self).__init__(*args, **kwds)
-
     def execute(self, executable, args=None, env=None, *a, **k):
-        if env is None:
-            os.environ.update(self.extra_environ)
-        else:
-            env.update(self.extra_environ)
         # The generated file is just javascript, so it's not executable.
         # Instead we arrange for it to be run with a javascript shell.
         if args is None:

@@ -1541,6 +1541,7 @@ class CompiledBlockASMJS(object):
                     # Trim the result if it's a less-than-full-sized integer,
                     result_size = descr.get_result_size()
                     result_sign = descr.is_result_signed()
+                    call = js.SignedCast(call)
                     call = js.cast_integer(call, result_size, result_sign)
                 self.bldr.emit_assignment(self._get_jsval(op.result), call)
 
@@ -1838,6 +1839,7 @@ class CompiledBlockASMJS(object):
         if isinstance(sizebox, Box):
             if not isinstance(sizevar, js.Variable):
                 sizevar = self._genop_realize_box(sizebox)
+        sizevar = self._emit_round_up_for_allocation(sizevar)
         # This is essentially an in-lining of MiniMark.malloc_fixedsize_clear()
         nfree_addr = js.ConstInt(gc_ll_descr.get_nursery_free_addr())
         ntop_addr = js.ConstInt(gc_ll_descr.get_nursery_top_addr())
@@ -1892,19 +1894,8 @@ class CompiledBlockASMJS(object):
                                  js.IMul(lengthvar, js.ConstInt(itemsize)))
         totalsize = self.bldr.allocate_intvar()
         self.bldr.emit_assignment(totalsize, calc_totalsize)
-        # Round up the total size to a whole multiple of base alignment size.
-        # XXX TODO: do this via bit-fiddling for moar speed.
-        if itemsize % WORD != 0:
-            padalign = js.word
-            padsize = self.bldr.allocate_intvar()
-            self.bldr.emit_assignment(padsize,
-                                      js.Mod(totalsize, padalign))
-            with self.bldr.emit_if_block(js.NotEqual(padsize, js.zero)):
-                self.bldr.emit_assignment(totalsize,
-                                          js.Plus(totalsize,
-                                                  js.Minus(padalign, padsize)))
-            self.bldr.free_intvar(padsize)
-        # This is essentially an in-lining of MiniMark.malloc_fixedsize_clear()
+        totalsize = self._emit_round_up_for_allocation(totalsize)
+        # This is essentially an in-lining of MiniMark.malloc_varsize_clear()
         nfree_addr = js.ConstInt(gc_ll_descr.get_nursery_free_addr())
         ntop_addr = js.ConstInt(gc_ll_descr.get_nursery_top_addr())
         nfree = js.HeapData(js.Int32, nfree_addr)
@@ -1948,6 +1939,22 @@ class CompiledBlockASMJS(object):
         # That's it!  Cleanup temp variables.
         self.bldr.free_intvar(new_nfree)
         self.bldr.free_intvar(totalsize)
+
+    def _emit_round_up_for_allocation(self, sizeval):
+        # For proper alignment of doubles, we must always allocate
+        # in 8-byte chunks.  Otherwise we'd leave the nursery badly
+        # aligned for subsequent allocations.
+        if isinstance(sizeval, js.ConstInt):
+            size = sizeval.getint()
+            sizeval = js.ConstInt((size + (2 * WORD - 1)) & ~(2 * WORD - 1))
+        else:
+            assert isinstance(sizeval, js.Variable)
+            # XXX TODO: can we avoid checking this in some cases?
+            # e.g. if itemsize is known to be a multiple of dword
+            align = js.Minus(js.dword, js.ConstInt(1))
+            self.bldr.emit_assignment(sizeval, js.And(js.Plus(sizeval, align),
+                                                      js.UNeg(align)))
+        return sizeval
 
     def genop_cond_call_gc_wb(self, op):
         assert op.result is None

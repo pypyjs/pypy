@@ -227,6 +227,7 @@ tempDoublePtr = TempDoublePtr()
 zero = false = ConstInt(0)
 one = true = ConstInt(1)
 word = ConstInt(WORD)
+dword = ConstInt(2*WORD)
 
 
 class HeapData(ASMJSValue):

@@ -198,15 +198,16 @@ class ASMJSBuilder(object):
         assert isinstance(addr, jsval.AbstractValue)
         # For doubles, we can't guarantee that the data is aligned.
         # Read it as two 32bit ints into a properly aligned chunk.
-        if typ is jsval.Float64:
-            tempaddr = self.allocate_intvar()
-            self.emit_assignment(tempaddr, addr)
-            addr = jsval.tempDoublePtr
-            pt1 = jsval.HeapData(jsval.Int32, tempaddr)
-            self.emit_store(pt1, addr, jsval.Int32)
-            pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, jsval.word))
-            self.emit_store(pt2, jsval.Plus(addr, jsval.word), jsval.Int32)
-            self.free_intvar(tempaddr)
+        #if typ is jsval.Float64:
+        #    tempaddr = self.allocate_intvar()
+        #    self.emit_assignment(tempaddr, addr)
+        #    addr = jsval.tempDoublePtr
+        #    pt1 = jsval.HeapData(jsval.Int32, tempaddr)
+        #    self.emit_store(pt1, addr, jsval.Int32)
+        #    pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(tempaddr, jsval.word))
+        #    self.emit_store(pt2, jsval.Plus(addr, jsval.word), jsval.Int32)
+        #    self.free_intvar(tempaddr)
+        #self.emit_assert(jsval.Equal(jsval.Mod(addr, jsval.ConstInt(typ.size)), jsval.zero), 'unaligned read', [addr, jsval.ConstInt(typ.size)])
         # Now we can do the actual load.
         assert isinstance(target, jsval.Variable)
         self.emit(target.varname)
@@ -237,11 +238,12 @@ class ASMJSBuilder(object):
         # For doubles, we can't guarantee that the data is aligned.
         # We have to store it into a properly aligned chunk, then
         # copy to final destination as two 32-bit ints.
-        tempaddr = None
-        if typ is jsval.Float64:
-            tempaddr = self.allocate_intvar()
-            self.emit_assignment(tempaddr, addr)
-            addr = jsval.tempDoublePtr
+        #tempaddr = None
+        #if typ is jsval.Float64:
+        #    tempaddr = self.allocate_intvar()
+        #    self.emit_assignment(tempaddr, addr)
+        #    addr = jsval.tempDoublePtr
+        #self.emit_assert(jsval.Equal(jsval.Mod(addr, jsval.ConstInt(typ.size)), jsval.zero), 'unaligned write', [addr, jsval.ConstInt(typ.size)])
         self.emit(typ.heap_name)
         self.emit("[(")
         self.emit_value(addr)
@@ -250,12 +252,12 @@ class ASMJSBuilder(object):
         self.emit("]=")
         self.emit_value(value)
         self.emit(";\n")
-        if typ is jsval.Float64:
-            pt1 = jsval.HeapData(jsval.Int32, addr)
-            self.emit_store(pt1, tempaddr, jsval.Int32)
-            pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, jsval.word))
-            self.emit_store(pt2, jsval.Plus(tempaddr, jsval.word), jsval.Int32)
-            self.free_intvar(tempaddr)
+        #if typ is jsval.Float64:
+        #    pt1 = jsval.HeapData(jsval.Int32, addr)
+        #    self.emit_store(pt1, tempaddr, jsval.Int32)
+        #    pt2 = jsval.HeapData(jsval.Int32, jsval.Plus(addr, jsval.word))
+        #    self.emit_store(pt2, jsval.Plus(tempaddr, jsval.word), jsval.Int32)
+        #    self.free_intvar(tempaddr)
 
     def emit_continue_loop(self):
         self.emit_statement("continue")
