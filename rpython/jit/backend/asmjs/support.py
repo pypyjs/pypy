@@ -95,6 +95,8 @@ def jitInvoke(funcid, label, frame):
 def jitFree(funcid):
     _jitCompiledFunctions[funcid] = None
     while funcid and len(_jitCompiledFunctions) == funcid + 1:
+        if _jitCompiledFunctions[funcid] is not None:
+            break
         del _jitCompiledFunctions[funcid]
         funcid -= 1
 
