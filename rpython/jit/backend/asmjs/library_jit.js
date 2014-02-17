@@ -7,7 +7,7 @@ var LibraryJIT = {
   //  JIT-compile a single function.
   //
   //  The input argument must be the heap address of a string containing
-  //  asmjs source code, defining a single function that takes two integer
+  //  asmjs source code, defining a single function that takes three integer
   //  arguments and returns an integer.
   //
   //  The source will be loaded, compiled, and linked with the main Module.
@@ -109,9 +109,9 @@ var LibraryJIT = {
 
   // Invoke a JIT-compiled function.
   //
-  // All JIT-compiled functions accept two integer arguments and produce an
-  // integer result.  You'll probably want to treat these like a void* to
-  // pass around data, but that's up to you.
+  // All JIT-compiled functions accept three integer arguments and produce an
+  // integer result.  You'll probably want to treat these like a void* to pass
+  // around data, but that's up to you.
   //
   // If you pass an id that does not have compiled code associated with it,
   // it will produce a return value of zero.

@@ -2,7 +2,6 @@
 import os
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.rtyper.tool import rffi_platform
 
 from rpython.jit.backend.asmjs import jsvalue as jsval
 from rpython.jit.backend.asmjs.arch import SANITYCHECK
@@ -54,9 +53,10 @@ class ASMJSBuilder(object):
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
-        chunks.append('function F(label, frame){\n')
-        chunks.append('label=label|0;\n')
+        chunks.append('function F(frame, loopid, label){\n')
         chunks.append('frame=frame|0;\n')
+        chunks.append('loopid=loopid|0;\n')
+        chunks.append('label=label|0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
         for varname, init_double in self.all_doublevars.iteritems():
@@ -258,8 +258,11 @@ class ASMJSBuilder(object):
             self.emit_store(pt2, jsval.Plus(tempaddr, jsval.word), jsval.Int32)
             self.free_intvar(tempaddr)
 
-    def emit_continue_loop(self):
-        self.emit_statement("continue")
+    def emit_continue_loop(self, label=""):
+        if label:
+            self.emit_statement("continue %s" % (label,))
+        else:
+            self.emit_statement("continue")
 
     def emit_exit(self):
         """Emit an immediate return from the function."""
@@ -293,8 +296,8 @@ class ASMJSBuilder(object):
     def emit_else_block(self):
         return ctx_else_block(self)
 
-    def emit_while_block(self, test):
-        return ctx_while_block(self, test)
+    def emit_while_block(self, test, label=""):
+        return ctx_while_block(self, test, label)
 
     def emit_switch_block(self, value):
         return ctx_switch_block(self, value)
@@ -349,13 +352,17 @@ class ctx_else_block(object):
 
 class ctx_while_block(object):
 
-    def __init__(self, bldr, test):
+    def __init__(self, bldr, test, label=""):
         self.bldr = bldr
         if not jsval.istype(test, jsval.Int):
             test = jsval.IntCast(test)
         self.test = test
+        self.label = label
 
     def __enter__(self):
+        if self.label:
+            self.bldr.emit(self.label)
+            self.bldr.emit(":")
         self.bldr.emit("while(")
         self.bldr.emit_value(self.test)
         self.bldr.emit("){\n")
@@ -380,8 +387,6 @@ class ctx_switch_block(object):
         return self.bldr
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.bldr.emit("default:\n")
-        self.bldr.emit_exit()
         self.bldr.emit("}\n")
 
 

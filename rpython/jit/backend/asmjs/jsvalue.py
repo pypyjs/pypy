@@ -677,8 +677,9 @@ class DynCallFunc(_CallFunc):
             self.jstype = Doublish
 
 
-label = IntVar("label")
 frame = IntVar("frame")
+loopid = IntVar("loopid")
+label = IntVar("label")
 
 
 class _FrameFieldAddr(ASMJSValue):

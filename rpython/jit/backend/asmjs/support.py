@@ -80,14 +80,14 @@ def jitCopy(srcId, dstId):
     _jitCompiledFunctions[dstId] = _jitCompiledFunctions[srcId]
 
 
-@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT,
+@jsexternal([rffi.INT, rffi.INT, rffi.INT, rffi.INT], rffi.INT,
             _nowrapper=True, random_effects_on_gcobjs=True)
-def jitInvoke(funcid, label, frame):
+def jitInvoke(funcid, frame, loopid, label):
     func = _jitCompiledFunctions.get(funcid, None)
     if func is None:
         res = 0
     else:
-        res = int(func(label, frame))
+        res = int(func(frame, loopid, label))
     return res
 
 
@@ -120,6 +120,7 @@ def load_asmjs(jssource, stdlib=None, foreign=None, heap=None):
 
 def compile_asmjs(jssource):
     """Compile asmjs module code into an equivalent python factory function."""
+    #print jssource
     ast = parse_asmjs(jssource)
     visitor = CompileASMJSVisitor()
     visitor.dispatch(ast)
@@ -240,6 +241,7 @@ class CompileASMJSVisitor(RPythonVisitor):
         self._chunks = []
         self._indent = ""
         self._loop_or_switch = []
+        self._next_label = ""
 
     def getpysource(self):
         return "".join(self._chunks)
@@ -272,6 +274,8 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.dispatch(declargs)
         self.emit("):")
         self.indent()
+        self.emit("__continue_loop = None")
+        self.newline()
         self.dispatch(node.children[-1])
         self.dedent()
 
@@ -323,7 +327,17 @@ class CompileASMJSVisitor(RPythonVisitor):
             self.dispatch(node.children[2])
             self.dedent()
 
+    def visit_stmt_labelledwhile(self, node):
+        self._next_label = node.children[0].additional_info
+        self.dispatch(node.children[1])
+
     def visit_stmt_while(self, node):
+        label = self._next_label
+        self._next_label = ""
+        # An outer loop to handle labelled continue.
+        self.emit("while True:")
+        self.indent()
+        # An inner loop to do the actual work.
         self.emit("while (")
         self.dispatch(node.children[0])
         self.emit("):")
@@ -331,6 +345,23 @@ class CompileASMJSVisitor(RPythonVisitor):
         self._loop_or_switch.append("loop")
         self.dispatch(node.children[1])
         self._loop_or_switch.pop()
+        self.dedent()
+        # Dispatch based on target loop.
+        self.emit("if __continue_loop is None:")
+        self.indent()
+        self.emit("break")
+        self.dedent()
+        self.emit("elif __continue_loop not in ('', %r):" % (label,))
+        self.indent()
+        self.emit("break")
+        self.dedent()
+        self.emit("else:")
+        self.indent()
+        self.emit("__continue_loop = None")
+        self.newline()
+        self.emit("continue")
+        self.dedent()
+        # Done
         self.dedent()
 
     def visit_stmt_switch(self, node):
@@ -393,7 +424,13 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.newline()
 
     def visit_stmt_continue(self, node):
-        self.emit("continue")
+        if node.children:
+            label = node.children[0].additional_info
+        else:
+            label = ""
+        self.emit("__continue_loop = %r" % (label,))
+        self.newline()
+        self.emit("break")
         self.newline()
 
     def visit_expr_cond(self, node):
@@ -790,7 +827,7 @@ funcdecl: ["function"] IDENTIFIER ["("] declargs [")"] stmt_block;
 
 # All the different kinds of statement.
 
-stmt: <stmt_block> | <stmt_if> | <stmt_while> |
+stmt: <stmt_block> | <stmt_if> | <stmt_while> | <stmt_labelledwhile> |
       <stmt_switch> | <stmt_line> [";"];
 
 stmt_line: <stmt_assign> | <stmt_var> | <stmt_expr> |
@@ -799,6 +836,8 @@ stmt_line: <stmt_assign> | <stmt_var> | <stmt_expr> |
 stmt_block: ["{"] stmt* ["}"];
 
 stmt_if: ["if" "("] expr [")"] stmt (["else"] stmt)?;
+
+stmt_labelledwhile: IDENTIFIER [":"] stmt_while;
 
 stmt_while: ["while" "("] expr [")"] stmt;
 
@@ -818,7 +857,7 @@ stmt_return: ["return"] expr?;
 
 stmt_break: ["break"];
 
-stmt_continue: ["continue"];
+stmt_continue: ["continue"] IDENTIFIER?;
 
 
 # All the different kinds of expression.

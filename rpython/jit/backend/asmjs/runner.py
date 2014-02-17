@@ -1,8 +1,7 @@
 
 from rpython.rlib.unroll import unrolling_iterable
-from rpython.rtyper.lltypesystem import lltype, llmemory, rffi
+from rpython.rtyper.lltypesystem import lltype, llmemory
 from rpython.rtyper.llinterp import LLInterpreter
-from rpython.rtyper.annlowlevel import llhelper
 from rpython.jit.backend.llsupport.llmodel import AbstractLLCPU
 from rpython.jit.metainterp import history
 
@@ -36,7 +35,6 @@ class CPU_ASMJS(AbstractLLCPU):
                  gcdescr=None):
         AbstractLLCPU.__init__(self, rtyper, stats, opts,
                                translate_support_code, gcdescr)
-        self._make_execute_trampoline_func()
 
     def set_debug(self, flag):
         return self.assembler.set_debug(flag)
@@ -62,29 +60,18 @@ class CPU_ASMJS(AbstractLLCPU):
         Each chunk of compiled code is represented by an integer "function id".
         We need to look up the id, build the necessary frame, and then call the
         helper function "jitInvoke" to execute the compiled function.
-
-        The compiled code will return the frame object with jf_force_descr set
-        to indicate control flow.  If zero then it's done and we can find the
-        results in the frame; if nonzero then it indicates another compiled
-        function that should be invoked.  We loop until it gets set to zero,
-        providing a simple and inefficient simulation of GOTOs between the
-        compiled chunks of code.
-
-        This little trampoline is necessary because the main interpreter is
-        running in asmjs mode, where it is forbidden to define new functions
-        at runtime.  It has to call into helper code hosted outside of the
-        asmjs fast-path.
         """
         #  This is mostly copied from llsupport/llmodel.py, but with changes
-        #  to invoke the external javascript helper trampoline thingy.
+        #  to invoke the external javascript helper thingy.
         lst = [(i, history.getkind(ARG)[0]) for i, ARG in enumerate(ARGS)]
         kinds = unrolling_iterable(lst)
 
         def execute_token(executable_token, *args):
             clt = executable_token.compiled_loop_token
             assert isinstance(clt, CompiledLoopTokenASMJS)
-            func_id = clt.compiled_funcid
-            frame_info = clt.frame_info
+            loopid = clt.compiled_loopid
+            funcid = clt.func.compiled_funcid
+            frame_info = clt.func.frame_info
             frame = self.gc_ll_descr.malloc_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
             locs = clt._ll_initial_locs
@@ -105,54 +92,16 @@ class CPU_ASMJS(AbstractLLCPU):
                     else:
                         assert kind == history.REF
                         self.set_ref_value(ll_frame, num, arg)
-                # Ensure the frame has a valid gcmap, since there's
-                # no guarantee the trampoline won't collect.
-                # XXX TODO need a writebarrier on the frame?
-                frame.jf_gcmap = clt.compiled_blocks[0].initial_gcmap
-                # Invoke the trampoline to execute it.
-                self.set_frame_next_call(ll_frame, func_id, 0)
-                ll_frame_adr = self.cast_ptr_to_int(ll_frame)
-                ll_frame_adr = self._execute_trampoline_func(ll_frame_adr)
-                ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
+                # Invoke it via the helper.
+                ll_frameadr = self.cast_ptr_to_int(ll_frame)
+                ll_frameadr = support.jitInvoke(funcid, ll_frameadr, loopid, 0)
+                ll_frame = self.cast_int_to_ptr(ll_frameadr, llmemory.GCREF)
             finally:
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
             return ll_frame
 
         return execute_token
-
-    def set_frame_next_call(self, ll_frame, funcid, label):
-        offset = self.get_ofs_of_frame_field("jf_extra_stack_depth")
-        next_call = (funcid << 8) | label
-        self.write_int_at_mem(ll_frame, offset, WORD, 0, next_call)
-
-    def get_frame_next_call(self, ll_frame):
-        offset = self.get_ofs_of_frame_field("jf_extra_stack_depth")
-        return self.read_int_at_mem(ll_frame, offset, WORD, 0)
-
-    def get_execute_trampoline_adr(self):
-        exeptr = llhelper(self._execute_trampoline_FUNCPTR,
-                          self._execute_trampoline_func)
-        return self.cast_ptr_to_int(exeptr)
-
-    def _make_execute_trampoline_func(self):
-
-        def execute_trampoline(ll_frame_adr):
-            ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-            next_call = self.get_frame_next_call(ll_frame)
-            funcid = next_call >> 8
-            while funcid != 0:
-                label = next_call & 0xFF
-                ll_frame_adr = support.jitInvoke(funcid, label, ll_frame_adr)
-                ll_frame = self.cast_int_to_ptr(ll_frame_adr, llmemory.GCREF)
-                next_call = self.get_frame_next_call(ll_frame)
-                funcid = next_call >> 8
-            return ll_frame_adr
-
-        ARGS = [rffi.INT]
-        EXEFUNCPTR = lltype.Ptr(lltype.FuncType(ARGS, rffi.INT))
-        self._execute_trampoline_func = execute_trampoline
-        self._execute_trampoline_FUNCPTR = EXEFUNCPTR
 
     def compile_loop(self, inputargs, operations, looptoken,
                      log=True, name=''):
