@@ -50,12 +50,12 @@ class ASMJSBuilder(object):
         chunks.append('var sqrt = stdlib.Math.sqrt;\n')
         # Import any required names from the Module object.
         chunks.append('var tempDoublePtr = foreign.tempDoublePtr|0;\n')
+        chunks.append('var jitInvoke = foreign._jitInvoke;\n')
         for funcname in self.imported_functions:
             chunks.append('var %s = foreign.%s;\n' % (funcname, funcname))
         # The function definition, including variable declarations.
-        chunks.append('function F(frame, loopid, label){\n')
+        chunks.append('function F(frame, label){\n')
         chunks.append('frame=frame|0;\n')
-        chunks.append('loopid=loopid|0;\n')
         chunks.append('label=label|0;\n')
         for varname, init_int in self.all_intvars.iteritems():
             chunks.append("var %s=%d;\n" % (varname, init_int))
@@ -258,11 +258,17 @@ class ASMJSBuilder(object):
             self.emit_store(pt2, jsval.Plus(tempaddr, jsval.word), jsval.Int32)
             self.free_intvar(tempaddr)
 
-    def emit_continue_loop(self, label=""):
+    def emit_continue(self, label=""):
         if label:
             self.emit_statement("continue %s" % (label,))
         else:
             self.emit_statement("continue")
+
+    def emit_break(self, label=""):
+        if label:
+            self.emit_statement("break %s" % (label,))
+        else:
+            self.emit_statement("break")
 
     def emit_exit(self):
         """Emit an immediate return from the function."""
@@ -299,8 +305,11 @@ class ASMJSBuilder(object):
     def emit_while_block(self, test, label=""):
         return ctx_while_block(self, test, label)
 
-    def emit_switch_block(self, value):
-        return ctx_switch_block(self, value)
+    def emit_do_block(self, test, label=""):
+        return ctx_do_block(self, test, label)
+
+    def emit_switch_block(self, value, label=""):
+        return ctx_switch_block(self, value, label)
 
     def emit_case_block(self, value):
         return ctx_case_block(self, value)
@@ -372,15 +381,41 @@ class ctx_while_block(object):
         self.bldr.emit("}\n")
 
 
+class ctx_do_block(object):
+
+    def __init__(self, bldr, test, label=""):
+        self.bldr = bldr
+        if not jsval.istype(test, jsval.Int):
+            test = jsval.IntCast(test)
+        self.test = test
+        self.label = label
+
+    def __enter__(self):
+        if self.label:
+            self.bldr.emit(self.label)
+            self.bldr.emit(":")
+        self.bldr.emit("do {\n")
+        return self.bldr
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.bldr.emit("\n} while (")
+        self.bldr.emit_value(self.test)
+        self.bldr.emit(")\n")
+
+
 class ctx_switch_block(object):
 
-    def __init__(self, bldr, value):
+    def __init__(self, bldr, value, label=""):
         self.bldr = bldr
         if not jsval.istype(value, jsval.Signed):
             value = jsval.SignedCast(value)
         self.value = value
+        self.label = label
 
     def __enter__(self):
+        if self.label:
+            self.bldr.emit(self.label)
+            self.bldr.emit(":")
         self.bldr.emit("switch(")
         self.bldr.emit_value(self.value)
         self.bldr.emit("){\n")

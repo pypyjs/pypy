@@ -1,6 +1,11 @@
 //
 //  emscripten helper library for JIT-compiling asmjs functions.
 //
+//  This is a re-implementation of library_jit.js that compiles all jitted
+//  functions into a single asmjs module.  Yes, that means it recompiles all
+//  jitted code whenever any jitted code has changed.  This is an experiment
+//  in reducing function call overhead.
+//
 
 var LibraryJIT = {
 
@@ -75,9 +80,73 @@ var LibraryJIT = {
       sourceChars.push(String.fromCharCode(HEAP8[i]));
       i++;
     }
-    var source = sourceChars.join("");
-    // Compile it into an asmjs linkable function, and link it.
-    var mkfunc = new Function("return (" + source + ")");
+    Module._jitCompiledFunctions[id] = sourceChars.join("");
+    // Re-compile everything into a great bit asmjs module.
+    modsource = "function M(stdlib, foreign, heap){\n"+
+        '"use asm";\n' +
+        'var HI8 = new stdlib.Int8Array(heap);\n' + 
+        'var HI16 = new stdlib.Int16Array(heap);\n' + 
+        'var HI32 = new stdlib.Int32Array(heap);\n' + 
+        'var HU8 = new stdlib.Uint8Array(heap);\n' + 
+        'var HU16 = new stdlib.Uint16Array(heap);\n' + 
+        'var HU32 = new stdlib.Uint32Array(heap);\n' + 
+        'var HF32 = new stdlib.Float32Array(heap);\n' + 
+        'var HF64 = new stdlib.Float64Array(heap);\n' + 
+        'var imul = stdlib.Math.imul;\n' +
+        'var sqrt = stdlib.Math.sqrt;\n' +
+        'var tempDoublePtr = foreign.tempDoublePtr|0;\n' +
+        'var abort = foreign.abort;\n';
+    var doneImports = {'tempDoublePtr': 1, 'abort': 1, 'jitInvoke': 1};
+    for (var id=1; id < Module._jitCompiledFunctions.length; id++) {
+      var importRE = expr = /var ([a-zA-Z0-0_]+) = foreign\.[a-zA-Z0-9_]+;/g;
+      var funcsrc = Module._jitCompiledFunctions[id];
+      var importRes;
+      while ((importRes = importRE.exec(funcsrc)) !== null) {
+        if (!doneImports[importRes[1]]) {
+          modsource += importRes[0] + "\n";
+          doneImports[importRes[1]] = 1;
+        }
+      }
+    }
+    var funcTableSize = Module._jitCompiledFunctions.length;
+    funcTableSize = Math.ceil(Math.log(funcTableSize) / Math.log(2))
+    funcTableSize = Math.pow(2, funcTableSize);
+    for (var id=1; id < Module._jitCompiledFunctions.length; id++) {
+      var funcsrc = Module._jitCompiledFunctions[id];
+      var bodystart = funcsrc.indexOf("function ", 10)
+      var bodystart = funcsrc.indexOf("(", bodystart)
+      var bodyend = funcsrc.lastIndexOf("}")
+      var bodyend = funcsrc.lastIndexOf("}", bodyend - 2)
+      var funcbody = funcsrc.substring(bodystart, bodyend + 1)
+      // Avoid redirecting through jitInvoke helper.
+      funcbody = funcbody.replace(/jitInvoke\(([0-9]+),/g, function(m, id) {
+        return "FUNCS[" + id + " & " + (funcTableSize-1) + "]("
+      })
+      modsource += "function F" + id + funcbody + "\n";
+    }
+      modsource += "function jitInvoke(id, frame, label) {\n" +
+          "id = id|0;\n" +
+          "frame = frame|0;\n" +
+          "label = label|0;\n" +
+          "return FUNCS[id & " + (funcTableSize-1) + "](frame|0,label|0)|0;\n" +
+          "}\n" +
+          "function jitAbort(frame,label) {\n" +
+          "frame = frame|0;\n" +
+          "label = label|0;\n" +
+          "return abort()|0;\n" +
+          "}\n" +
+          "var FUNCS = [jitAbort"
+      var id = 1;
+      for (; id < Module._jitCompiledFunctions.length; id++) {
+        modsource += ",F" + id;
+      }
+      for (; id < funcTableSize; id++) {
+        modsource += ",jitAbort";
+      }
+      modsource += "];\n" +
+          "return jitInvoke;\n" +
+          "}"
+    var mkfunc = new Function("return (" + modsource + ")");
     var stdlib = {
       "Math": Math,
       "Int8Array": Int8Array,
@@ -95,16 +164,8 @@ var LibraryJIT = {
       }
       Module.tempDoublePtr = tempDoublePtr;
     }
-    Module._jitCompiledFunctions[id] = mkfunc()(stdlib, Module, buffer);
+    Module._jitCompiledInvoke = mkfunc()(stdlib, Module, buffer);
     return id
-  },
-
-  // Copy a JIT-compiled function to another id.
-  //
-  jitCopy: function(srcId, dstId) {
-    srcId = srcId|0;
-    dstId = dstId|0;
-    Module._jitCompiledFunctions[dstId] = Module._jitCompiledFunctions[srcId];
   },
 
   // Invoke a JIT-compiled function.
@@ -120,9 +181,9 @@ var LibraryJIT = {
     id = id|0;
     label = label|0;
     frame = frame|0;
-    var func = Module._jitCompiledFunctions[id];
-    if (func) {
-        return func(frame, label)|0;
+    var src = Module._jitCompiledFunctions[id];
+    if (src && Module._jitCompiledInvoke) {
+        return Module._jitCompiledInvoke(id, frame, label)|0;
     } else {
         return 0|0;
     }

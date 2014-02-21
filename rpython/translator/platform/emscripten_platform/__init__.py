@@ -47,12 +47,11 @@ class EmscriptenPlatform(BasePosix):
       "-O3",
       "-s", "FORCE_ALIGNED_MEMORY=1",
       "-s", "FUNCTION_POINTER_ALIGNMENT=1",
-      "-s", "CORRECT_OVERFLOWS=0",
-      "-s", "CORRECT_SIGNS=0",
       "-s", "ASSERTIONS=0",
       # Some parts of the JIT assume that a function is uniquely identified
       # by its pointer.  This makes it so, at the cost of a lot of extra
       # padding in the function type tables.
+      # XXX TODO: fix the JIT to no longer require this.
       "-s", "ALIASING_FUNCTION_POINTERS=0",
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...

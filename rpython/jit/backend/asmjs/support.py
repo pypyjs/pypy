@@ -18,6 +18,7 @@ import math
 import ctypes
 import struct
 import subprocess
+import contextlib
 
 from rpython.rlib.parsing.tree import RPythonVisitor
 from rpython.rlib.parsing.ebnfparse import parse_ebnf, make_parse_function
@@ -80,14 +81,14 @@ def jitCopy(srcId, dstId):
     _jitCompiledFunctions[dstId] = _jitCompiledFunctions[srcId]
 
 
-@jsexternal([rffi.INT, rffi.INT, rffi.INT, rffi.INT], rffi.INT,
+@jsexternal([rffi.INT, rffi.INT, rffi.INT], rffi.INT,
             _nowrapper=True, random_effects_on_gcobjs=True)
-def jitInvoke(funcid, frame, loopid, label):
+def jitInvoke(funcid, frame, label):
     func = _jitCompiledFunctions.get(funcid, None)
     if func is None:
         res = 0
     else:
-        res = int(func(frame, loopid, label))
+        res = int(func(frame, label))
     return res
 
 
@@ -120,12 +121,12 @@ def load_asmjs(jssource, stdlib=None, foreign=None, heap=None):
 
 def compile_asmjs(jssource):
     """Compile asmjs module code into an equivalent python factory function."""
-    #print jssource
+    print jssource
     ast = parse_asmjs(jssource)
     visitor = CompileASMJSVisitor()
     visitor.dispatch(ast)
     pysource = visitor.getpysource()
-    #print pysource
+    print pysource
     ns = {}
     pycode = compile(pysource, "<pyasmjs>", "exec")
     exec pycode in globals(), ns
@@ -228,6 +229,19 @@ def jsdiv(lhs, rhs):
         return float('inf')
 
 
+class LoopException(Exception):
+    def __init__(self, label=""):
+        self.label = label
+
+
+class ContinueLoop(LoopException):
+    pass
+
+
+class BreakLoop(LoopException):
+    pass
+
+
 class CompileASMJSVisitor(RPythonVisitor):
     """An AST visitor to translate asmjs into python source code.
 
@@ -240,7 +254,7 @@ class CompileASMJSVisitor(RPythonVisitor):
     def __init__(self):
         self._chunks = []
         self._indent = ""
-        self._loop_or_switch = []
+        self._scope_stack = []
         self._next_label = ""
 
     def getpysource(self):
@@ -253,13 +267,87 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.emit("\n")
         self.emit(self._indent)
 
+    @contextlib.contextmanager
     def indent(self):
         self._indent = self._indent + "    "
         self.newline()
-
-    def dedent(self):
+        yield None
         self._indent = self._indent[:-4]
         self.newline()
+
+    @contextlib.contextmanager
+    def emit_while(self, *conds):
+        self.emit("while ")
+        for cond in conds:
+            if isinstance(cond, basestring):
+                self.emit(cond)
+            else:
+                self.dispatch(cond)
+        self.emit(":")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_if(self, *conds):
+        self.emit("if ")
+        for cond in conds:
+            if isinstance(cond, basestring):
+                self.emit(cond)
+            else:
+                self.dispatch(cond)
+        self.emit(":")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_elif(self, *conds):
+        self.emit("elif ")
+        for cond in conds:
+            if isinstance(cond, basestring):
+                self.emit(cond)
+            else:
+                self.dispatch(cond)
+        self.emit(":")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_else(self):
+        self.emit("else:")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_try(self):
+        self.emit("try:")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_except(self, types):
+        self.emit("except ")
+        self.emit(types)
+        self.emit(":")
+        with self.indent():
+            yield None
+
+    @contextlib.contextmanager
+    def emit_loop(self, label):
+        with self.emit_while("True"):
+            with self.emit_try():
+                yield None
+            with self.emit_except("BreakLoop, e"):
+                with self.emit_if("e.label not in ('', %r)" % (label,)):
+                    self.emit("raise")
+                    self.newline()
+                self.emit("break")
+                self.newline()
+            with self.emit_except("ContinueLoop, e"):
+                with self.emit_if("e.label not in ('', %r)" % (label,)):
+                    self.emit("raise")
+                    self.newline()
+                self.emit("continue")
+                self.newline()
 
     def visit_module(self, node):
         if node.children[0].symbol == "IDENTIFIER":
@@ -273,11 +361,8 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.emit("(")
         self.dispatch(declargs)
         self.emit("):")
-        self.indent()
-        self.emit("__continue_loop = None")
-        self.newline()
-        self.dispatch(node.children[-1])
-        self.dedent()
+        with self.indent():
+            self.dispatch(node.children[-1])
 
     def visit_declargs(self, node):
         if node.children:
@@ -302,9 +387,8 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.emit("(")
         self.dispatch(node.children[1])
         self.emit("):")
-        self.indent()
-        self.dispatch(node.children[2])
-        self.dedent()
+        with self.indent():
+            self.dispatch(node.children[2])
 
     def visit_stmt_block(self, node):
         if not node.children:
@@ -315,85 +399,69 @@ class CompileASMJSVisitor(RPythonVisitor):
                 self.dispatch(child)
 
     def visit_stmt_if(self, node):
-        self.emit("if (")
-        self.dispatch(node.children[0])
-        self.emit("):")
-        self.indent()
-        self.dispatch(node.children[1])
-        self.dedent()
+        with self.emit_if(node.children[0]):
+            self.dispatch(node.children[1])
         if len(node.children) == 3:
-            self.emit("else:")
-            self.indent()
-            self.dispatch(node.children[2])
-            self.dedent()
+            with self.emit_else():
+                self.dispatch(node.children[2])
 
-    def visit_stmt_labelledwhile(self, node):
+    def visit_stmt_labelled(self, node):
         self._next_label = node.children[0].additional_info
         self.dispatch(node.children[1])
 
     def visit_stmt_while(self, node):
         label = self._next_label
         self._next_label = ""
-        # An outer loop to handle labelled continue.
-        self.emit("while True:")
-        self.indent()
-        # An inner loop to do the actual work.
-        self.emit("while (")
-        self.dispatch(node.children[0])
-        self.emit("):")
-        self.indent()
-        self._loop_or_switch.append("loop")
-        self.dispatch(node.children[1])
-        self._loop_or_switch.pop()
-        self.dedent()
-        # Dispatch based on target loop.
-        self.emit("if __continue_loop is None:")
-        self.indent()
-        self.emit("break")
-        self.dedent()
-        self.emit("elif __continue_loop not in ('', %r):" % (label,))
-        self.indent()
-        self.emit("break")
-        self.dedent()
-        self.emit("else:")
-        self.indent()
-        self.emit("__continue_loop = None")
-        self.newline()
-        self.emit("continue")
-        self.dedent()
-        # Done
-        self.dedent()
+        self._scope_stack.append(("loop", label))
+        with self.emit_loop(label):
+            with self.emit_if("not (", node.children[0], ")"):
+                self.emit("raise BreakLoop()")
+                self.newline()
+            self.dispatch(node.children[1])
+        self._scope_stack.pop()
+
+    def visit_stmt_do(self, node):
+        label = self._next_label
+        self._next_label = ""
+        self._scope_stack.append(("loop", label))
+        with self.emit_loop(label):
+            self.dispatch(node.children[0])
+            with self.emit_if("not (", node.children[1], ")"):
+                self.emit("raise BreakLoop()")
+                self.newline()
+        self._scope_stack.pop()
 
     def visit_stmt_switch(self, node):
+        label = self._next_label
+        self._next_label = ""
+        self._scope_stack.append(("switch", label))
         self.emit("__switchvar = ")
         self.dispatch(node.children[0])
         self.newline()
-        self.emit("if False:")
-        self.indent()
-        self.emit("pass")
-        self.dedent()
-        self._loop_or_switch.append("switch")
-        for child in node.children[1:]:
-            self.dispatch(child)
-        self._loop_or_switch.pop()
+        with self.emit_try():
+            with self.emit_if("False"):
+                self.emit("pass")
+            for child in node.children[1:]:
+                self.dispatch(child)
+        with self.emit_except("BreakLoop, e"):
+            with self.emit_if("e.label not in ('', %r)" % (label,)):
+                self.emit("raise")
+                self.newline()
+        self._scope_stack.pop()
 
     def visit_stmt_case(self, node):
-        assert self._loop_or_switch[-1] == "switch"
-        self.emit("elif __switchvar == ")
-        self.dispatch(node.children[0])
-        self.emit(":")
-        self.indent()
-        self.emit("pass")
-        self.newline()
-        self.dispatch(node.children[1])
-        self.dedent()
+        assert self._scope_stack[-1][0] == "switch"
+        with self.emit_elif("__switchvar == ", node.children[0]):
+            self.emit("pass")
+            self.newline()
+            self.dispatch(node.children[1])
 
     def visit_stmt_default(self, node):
-        assert self._loop_or_switch[-1] == "switch"
-        self.emit("else:")
-        self.indent()
-        self.dispatch(node.children[0])
-        self.dedent()
+        assert self._scope_stack[-1][0] == "switch"
+        with self.emit_else():
+            self.emit("pass")
+            self.newline()
+            self.dispatch(node.children[0])
 
     def visit_stmt_expr(self, node):
         self.dispatch(node.children[0])
@@ -419,8 +487,11 @@ class CompileASMJSVisitor(RPythonVisitor):
         self.newline()
 
     def visit_stmt_break(self, node):
-        if self._loop_or_switch[-1] == "loop":
-            self.emit("break")
+        if node.children:
+            label = node.children[0].additional_info
+        else:
+            label = ""
+        self.emit("raise BreakLoop(%r)" % (label,))
         self.newline()
 
     def visit_stmt_continue(self, node):
@@ -428,9 +499,7 @@ class CompileASMJSVisitor(RPythonVisitor):
             label = node.children[0].additional_info
         else:
             label = ""
-        self.emit("__continue_loop = %r" % (label,))
-        self.newline()
-        self.emit("break")
+        self.emit("raise ContinueLoop(%r)" % (label,))
         self.newline()
 
     def visit_expr_cond(self, node):
@@ -827,8 +896,8 @@ funcdecl: ["function"] IDENTIFIER ["("] declargs [")"] stmt_block;
 
 # All the different kinds of statement.
 
-stmt: <stmt_block> | <stmt_if> | <stmt_while> | <stmt_labelledwhile> |
-      <stmt_switch> | <stmt_line> [";"];
+stmt: <stmt_block> | <stmt_if> | <stmt_while> | <stmt_labelled> |
+      <stmt_do> | <stmt_switch> | <stmt_line> [";"];
 
 stmt_line: <stmt_assign> | <stmt_var> | <stmt_expr> |
            <stmt_return> | <stmt_break> | <stmt_continue>;
@@ -837,9 +906,11 @@ stmt_block: ["{"] stmt* ["}"];
 
 stmt_if: ["if" "("] expr [")"] stmt (["else"] stmt)?;
 
-stmt_labelledwhile: IDENTIFIER [":"] stmt_while;
+stmt_labelled: IDENTIFIER [":"] stmt;
 
 stmt_while: ["while" "("] expr [")"] stmt;
+
+stmt_do: ["do"] stmt ["while" "("] expr [")"];
 
 stmt_switch: ["switch" "("] expr [")" "{"] stmt_case* ["}"];
 
@@ -855,7 +926,7 @@ stmt_assign: object_name ["="] expr;
 
 stmt_return: ["return"] expr?;
 
-stmt_break: ["break"];
+stmt_break: ["break"] IDENTIFIER?;
 
 stmt_continue: ["continue"] IDENTIFIER?;
 

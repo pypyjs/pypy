@@ -13,7 +13,7 @@ from rpython.jit.metainterp.history import (AbstractValue, Box, Const,
 
 from rpython.jit.backend.asmjs.arch import SANITYCHECK, WORD
 
-STANDARD_FUNCTIONS = ("imul", "sqrt")
+STANDARD_FUNCTIONS = ("imul", "sqrt", "jitInvoke")
 
 # Type markers to distinguish the type of values.
 # This is a class heirarchy, but rpython wont let me use issubclass().
@@ -678,7 +678,6 @@ class DynCallFunc(_CallFunc):
 
 
 frame = IntVar("frame")
-loopid = IntVar("loopid")
 label = IntVar("label")
 
 

@@ -55,14 +55,6 @@ INVALIDATION_PTR = lltype.Ptr(INVALIDATION)
 INVALIDATION_SIZE = WORD
 
 
-ASMJSGUARDTOKEN = lltype.Struct(
-    "ASMJSGUARDTOKEN",
-    ("label", lltype.Signed)
-)
-ASMJSGUARDTOKEN_PTR = lltype.Ptr(ASMJSGUARDTOKEN)
-ASMJSGUARDTOKEN_SIZE = WORD
-
-
 class AssemblerASMJS(object):
     """Class for assembling a Trace into a compiled ASMJS function."""
 
@@ -108,7 +100,6 @@ class AssemblerASMJS(object):
     def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace."""
         # Build a new func holding this new loop.
-        # XXX TODO: avoid this if it'll merge with an existing one.
         func = CompiledFuncASMJS(self)
         clt = CompiledLoopTokenASMJS(self, func, looptoken.number)
         looptoken.compiled_loop_token = clt
@@ -116,7 +107,7 @@ class AssemblerASMJS(object):
         clt.add_code_to_loop(operations, inputargs)
         clt._ll_initial_locs = clt.compiled_blocks[0].inputlocs
         self.teardown()
-        # If it jumps to an existing loop, merge with that module.
+        # If it jumps to an existing loop, merge with that func.
         # If not, compile it afresh.
         final_op = operations[-1]
         if final_op.getopnum() != rop.JUMP:
@@ -124,10 +115,11 @@ class AssemblerASMJS(object):
         else:
             descr = final_op.getdescr()
             assert isinstance(descr, TargetToken)
-            if descr._asmjs_clt is clt:
+            target_block = descr._asmjs_block
+            if target_block.clt is clt:
                 func.reassemble()
             else:
-                descr._asmjs_clt.func.merge_with(func)
+                target_block.clt.func.merge_with(func)
 
     def assemble_bridge(self, faildescr, inputargs, operations,
                         original_loop_token, log):
@@ -146,10 +138,11 @@ class AssemblerASMJS(object):
         else:
             descr = final_op.getdescr()
             assert isinstance(descr, TargetToken)
-            if descr._asmjs_clt is clt:
+            target_block = descr._asmjs_block
+            if target_block.clt is clt:
                 clt.func.reassemble()
             else:
-                descr._asmjs_clt.func.merge_with(clt.func)
+                target_block.clt.func.merge_with(clt.func)
 
     def redirect_call_assembler(self, oldlooptoken, newlooptoken):
         oldclt = oldlooptoken.compiled_loop_token
@@ -178,43 +171,6 @@ class CompiledFuncASMJS(object):
     Combining all local jumps into a single function reduces the overhead
     of dispatching between loops, at the cost of increased jit-compilation
     overhead.
-
-    The code for a function a simple switch-in-a-loop dispatching between
-    the loops.  It looks like this:
-
-      function jitted(frame, loop, label) {
-
-        // Load the input args, for the initial target loop and label.
-        switch(loop) {
-          case 0:
-            <load input args for loop 0>
-          ...
-          case N:
-            <load input args for loop N>
-          default:
-            return frame
-        }
-
-        // Dispatch between loops until one exits.
-        FUNC: while (1) {
-          switch(loop) {
-            case 0:
-              <code for loop 0>
-              continue FUNC;
-            ...
-            case N:
-              <code for loop N>
-              continue FUNC;
-            default:
-              return frame
-          }
-        }
-      }
-
-    The switch-in-a-loop construct is known to be inefficient.  Ideally we
-    would use something like emscripten's relooper algorithm to generate
-    higher-level control flow constructs here.  But it shouldn't be too
-    bad when used with AOT asmjs compilation, and it's a solid start.
     """
 
     def __init__(self, assembler):
@@ -222,6 +178,7 @@ class CompiledFuncASMJS(object):
         self.cpu = assembler.cpu
         self.compiled_funcid = support.jitReserve()
         self.compiled_loops = []
+        self.compiled_blocks = []
         self.num_removed_loops = 0
         self.merged_from = None
         self.merged_into = None
@@ -235,7 +192,7 @@ class CompiledFuncASMJS(object):
         support.jitFree(self.compiled_funcid)
 
     def merge_with(self, other):
-        """Merge loops form two functions into a single unified function.
+        """Merge loops from two functions into a single unified function.
 
         This method must be called when we discover two previously-independent
         sets of loops that can now jump to each other.  It combines the loops
@@ -246,8 +203,11 @@ class CompiledFuncASMJS(object):
             assert self.merged_into is None
             assert other.merged_into is None
         # Merge into the func with the largest number of existing loops.
-        # This means we have to generation fewer redirects.
-        if len(self.compiled_loops) < len(other.compiled_loops):
+        # This will mean we generate generate fewer redirects.
+        #if len(self.compiled_loops) < len(other.compiled_loops):
+        # XXX TODO: actually, let's merge into the one with the lowest
+        # funcid, as it'll probably have compiled jumps in it.
+        if self.compiled_funcid > other.compiled_funcid:
             res_func = other
             src_func = self
         else:
@@ -257,12 +217,15 @@ class CompiledFuncASMJS(object):
             res_func.merged_from = []
         # Merge all the loops into the selected result function.
         res_func.merged_from.append(src_func)
+        res_func.ensure_frame_depth(src_func.frame_info.jfi_frame_depth * WORD)
         for clt in src_func.compiled_loops:
             clt.func = res_func
             clt.compiled_loopid = len(res_func.compiled_loops)
             clt.frame_info = res_func.frame_info
             res_func.compiled_loops.append(clt)
-            res_func.ensure_frame_depth(clt.frame_info.jfi_frame_depth * WORD)
+        for block in src_func.compiled_blocks:
+            block.compiled_blockid = len(res_func.compiled_blocks)
+            res_func.compiled_blocks.append(block)
         res_func.reassemble()
         # Mark the source function as being merged.
         src_func.merged_into = res_func
@@ -272,8 +235,13 @@ class CompiledFuncASMJS(object):
     def remove_loop(self, clt):
         if SANITYCHECK:
             assert self.compiled_loops[clt.compiled_loopid] is clt
+            for block in clt.compiled_blocks:
+                assert self.compiled_blocks[block.compiled_blockid] is block
         self.compiled_loops[clt.compiled_loopid] = None
         clt.func = None
+        for block in clt.compiled_blocks:
+            self.compiled_blocks[block.compiled_blockid] = None
+            block.clt = None
         self.num_removed_loops += 1
         if self.num_removed_loops < len(self.compiled_loops):
             self.reassemble()
@@ -287,23 +255,38 @@ class CompiledFuncASMJS(object):
         self.frame_info.update_frame_depth(baseofs, required_depth)
 
     def reassemble(self):
-        """Re-compile the jitted asmjs function for this function."""
+        """Re-compile the jitted asmjs function for this function.
+
+        The generated code consists of a short header to load input arguments
+        and sanity-check a few things, followed by the relooped code for
+        all the contained blocks.
+        """
         bldr = ASMJSBuilder(self.cpu)
         if self.merged_into is not None:
             # This function has been merged into some other function.
             # Dispatch each loop to its new location.
             bldr.emit_comment("DISPATCH TO MERGED FUNCTION")
-            with bldr.emit_switch_block(js.loopid):
-                for i in xrange(len(self.compiled_loops)):
-                    with bldr.emit_case_block(js.ConstInt(i)):
+            if len(self.compiled_loops) == 1:
+                clt = self.compiled_loops[0]
+                assert clt is not None
+                funcid = js.ConstInt(clt.func.compiled_funcid)
+                loopid = js.ConstInt(clt.compiled_loopid)
+                callargs = [funcid, js.frame, loopid]
+                call = js.CallFunc("jitInvoke", callargs)
+                bldr.emit_assignment(js.frame, call)
+                bldr.emit_exit()
+            else:
+                with bldr.emit_switch_block(js.label):
+                    for i in xrange(len(self.compiled_loops)):
                         clt = self.compiled_loops[i]
                         if clt is not None:
-                            funcid = js.ConstInt(clt.func.compiled_funcid)
-                            loopid = js.ConstInt(clt.compiled_loopid)
-                            callargs = [funcid, js.frame, loopid, js.label]
-                            call = js.CallFunc("jitInvoke", callargs)
-                            bldr.emit_assignment(js.frame, call)
-                            bldr.emit_exit()
+                            with bldr.emit_case_block(js.ConstInt(i)):
+                                funcid = js.ConstInt(clt.func.compiled_funcid)
+                                loopid = js.ConstInt(clt.compiled_loopid)
+                                callargs = [funcid, js.frame, loopid]
+                                call = js.CallFunc("jitInvoke", callargs)
+                                bldr.emit_assignment(js.frame, call)
+                                bldr.emit_exit()
         else:
             # We check the depth of the frame at entry to the function.
             # If it's too small then we rellocate it via a helper.
@@ -314,7 +297,7 @@ class CompiledFuncASMJS(object):
             with bldr.emit_if_block(frame_too_small):
                 # We must store a gcmap to prevent input args from being gc'd.
                 # The layout of input args depends on the target loop.
-                with bldr.emit_switch_block(js.loopid):
+                with bldr.emit_switch_block(js.label):
                     for clt in self.compiled_loops:
                         loopid = js.ConstInt(clt.compiled_loopid)
                         with bldr.emit_case_block(loopid):
@@ -326,28 +309,210 @@ class CompiledFuncASMJS(object):
                 with ctx_preserve_exception(self, bldr):
                     newframe = js.DynCallFunc("iii", reallocfn, args)
                     bldr.emit_assignment(js.frame, newframe)
-            # Load input args for the loop being entered.
+            # Load input args for the loop being entered,
+            # and convert from loopid to blockid
             bldr.emit_comment("LOAD INPUT ARGS")
-            with bldr.emit_switch_block(js.loopid):
-                for clt in self.compiled_loops:
-                    loopid = js.ConstInt(clt.compiled_loopid)
-                    with bldr.emit_case_block(loopid):
-                        clt.emit_load_arguments(bldr)
-            # Generate the dispatch loop, with the body of
-            # each loop inside a switch statement.
-            bldr.emit_comment("MAIN DISPATCH LOOP")
-            with bldr.emit_while_block(js.true, "FUNC"):
-                with bldr.emit_switch_block(js.loopid):
+            if len(self.compiled_loops) == 1:
+                clt = self.compiled_loops[0]
+                assert clt is not None
+                clt.emit_load_arguments(bldr)
+                clt.emit_set_initial_blockid(bldr)
+            else:
+                with bldr.emit_switch_block(js.label):
                     for clt in self.compiled_loops:
-                        loopid = js.ConstInt(clt.compiled_loopid)
-                        with bldr.emit_case_block(loopid):
-                            clt.emit_body(bldr)
+                        if clt is not None:
+                            loopid = js.ConstInt(clt.compiled_loopid)
+                            with bldr.emit_case_block(loopid):
+                                clt.emit_load_arguments(bldr)
+                                clt.emit_set_initial_blockid(bldr)
+            # Generate the relooped body from all loop blocks.
+            blocks = {}
+            entries = []
+            for clt in self.compiled_loops:
+                if clt is not None and clt.redirected_to is None:
+                    entries.append(clt.compiled_blocks[0].compiled_blockid)
+                    for block in clt.compiled_blocks:
+                        blocks[block.compiled_blockid] = block
+            self.reloop_state = []
+            self.emit_relooped_blocks(bldr, entries, blocks)
+            self.reloop_state = None
             # Always exit by returning the frame.
             bldr.emit_exit()
 
         # Compile the replacement source code for our function.
         jssrc = bldr.finish()
+        #os.write(2, "=-=-=-= COMPILED\n")
+        #os.write(2, jssrc)
+        #os.write(2, "\n=-=-=-=-=-=-=-=-\n")
         support.jitRecompile(self.compiled_funcid, jssrc)
+
+    def emit_relooped_blocks(self, bldr, entries, blocks):
+        if not entries:
+            return
+        # See which entry blocks need a path looping back to them.
+        needs_loop = {}
+        for entry1 in entries:
+            for entry2 in entries:
+                if self._block_needs_path(entry2, entry1):
+                    needs_loop[entry1] = True
+        # Create a simple block if we can.
+        if len(entries) == 1 and len(needs_loop) == 0:
+            self._emit_simple_block(bldr, entries, blocks)
+            return
+        # Create a multiple block if we can split unique entry subsets.
+        unique_entries = {}
+        for entry in entries:
+            if entry not in needs_loop:
+                unique_entries[entry] = {}
+        if unique_entries:
+            self._emit_multiple_block(bldr, entries, blocks, unique_entries)
+            return
+        # Create a loop block as a last resort.
+        self._emit_loop_block(bldr, entries, blocks)
+
+    def _push_reloop_state(self, here_entries, there_entries, there_blocks):
+        label = "L%d" % (len(self.reloop_state),)
+        self.reloop_state.append((label, here_entries, there_entries, there_blocks))
+        return label
+
+    def _pop_reloop_state(self):
+        _l, _e, there_entries, there_blocks = self.reloop_state.pop()
+        return there_entries, there_blocks 
+
+    def _emit_simple_block(self, bldr, entries, blocks):
+        entry_block = blocks.pop(entries[0])
+        label = self._push_reloop_state([], [], blocks)
+        with bldr.emit_do_block(js.zero, label):
+            entry_block.emit_body(bldr)
+        next_entries, next_blocks = self._pop_reloop_state()
+        self.emit_relooped_blocks(bldr, next_entries, next_blocks)
+
+    def _emit_multiple_block(self, bldr, entries, blocks, unique_entries):
+        # Find the blocks that are unique to each entry.
+        for block in blocks.keys():
+            unique_entry = -1
+            for entry in entries:
+                if self._block_needs_path(entry, block):
+                    if unique_entry >= 0:
+                        unique_entry = -1
+                        break
+                    unique_entry = entry
+            if unique_entry >= 0 and unique_entry in unique_entries:
+                unique_entries[unique_entry][block] = blocks.pop(block)
+        other_entries = []
+        for entry in entries:
+            if entry in unique_entries:
+                if entry in blocks:
+                    unique_entries[entry][entry] = blocks.pop(entry)
+            else:
+                other_entries.append(entry)
+        # Emit code to switch between the unique entries.
+        label = self._push_reloop_state([], other_entries, blocks)
+        if len(unique_entries) == 1:
+            for entry in unique_entries:
+                blockid = js.ConstInt(entry)
+                unique_blocks = unique_entries[entry]
+                with bldr.emit_if_block(js.Equal(js.label, blockid)):
+                    with bldr.emit_do_block(js.zero, label):
+                        self.emit_relooped_blocks(bldr, [entry], unique_blocks)
+        else:
+            with bldr.emit_switch_block(js.label, label):
+                for entry in unique_entries:
+                    with bldr.emit_case_block(js.ConstInt(entry)):
+                        unique_blocks = unique_entries[entry]
+                        self.emit_relooped_blocks(bldr, [entry], unique_blocks)
+        next_entries, next_blocks = self._pop_reloop_state()
+        self.emit_relooped_blocks(bldr, next_entries, next_blocks)
+
+    def _emit_loop_block(self, bldr, entries, blocks):
+        # Gather all the blocks that must be inside the loop.
+        # XXX TODO: somehow do this by traversing forwards from the entries?
+        inner_blocks = {}
+        for block in blocks.keys():
+            for entry in entries:
+                if self._block_needs_path(block, entry):
+                    inner_blocks[block] = blocks.pop(block)
+                    break
+        # Now we can emit the loop.
+        # We've pushed the entries to the reloop state, so the reachability
+        # calculation will differ when we recurse into emit_relooped_blocks.
+        # This is very important to prevent an infinite loop!
+        label = self._push_reloop_state(entries, [], blocks)
+        with bldr.emit_while_block(js.true, label):
+            self.emit_relooped_blocks(bldr, entries, inner_blocks)
+        next_entries, next_blocks = self._pop_reloop_state()
+        self.emit_relooped_blocks(bldr, next_entries, next_blocks)
+
+    def emit_jump(self, bldr, blockid):
+        i = len(self.reloop_state) - 1
+        while i >= 0:
+            # XXX TODO: use dicts of entries for faster lookup?
+            label, here_entries, there_entries, blocks = self.reloop_state[i]
+            if blockid in here_entries:
+                bldr.emit_assignment(js.label, js.ConstInt(blockid))
+                bldr.emit_continue(label)
+                break
+            if blockid in blocks:
+                block = self.compiled_blocks[blockid]
+                # Inline-emit guards, since they have unique predecessor.
+                # XXX TODO: clean up this hack by directly attaching them to
+                # the owning block, rather than making them a separate block.
+                if isinstance(block.intoken, AbstractFailDescr):
+                    block.emit_body(bldr)
+                    blocks.pop(blockid)
+                    break
+                if blockid not in there_entries:
+                    there_entries.append(blockid)
+                bldr.emit_assignment(js.label, js.ConstInt(blockid))
+                bldr.emit_break(label)
+                break
+            i -= 1
+        else:
+            assert False, "should never reach here"
+
+    def _block_needs_path(self, src_blockid, dst_blockid):
+        # XXX TODO: it is tremendously inefficient to recalculate
+        # this over and over again, but it needs to be dynamic
+        # because of the changing set of blocks that have a path.
+        seen = {}
+        src_block = self.compiled_blocks[src_blockid]
+        queue = []
+        for succ in self._block_successors(src_block):
+            queue.append(succ)
+        while queue:
+            block = queue.pop()
+            blockid = block.compiled_blockid
+            if blockid in seen:
+                continue
+            seen[blockid] = True
+            if self._block_has_path(blockid):
+                continue
+            if blockid == dst_blockid:
+                return True
+            for succ in self._block_successors(block):
+                queue.append(succ)
+        return False
+
+    def _block_has_path(self, blockid):
+        i = len(self.reloop_state) - 1
+        while i >= 0:
+            label, here_entries, there_entries, blocks = self.reloop_state[i]
+            if blockid in here_entries:
+                return True
+            if blockid in there_entries:
+                return True
+            i -= 1
+        return False
+
+    def _block_successors(self, block):
+        outtoken = block.outtoken
+        if outtoken is not None:
+            assert isinstance(outtoken, TargetToken)
+            if outtoken._asmjs_block is not None:
+                yield outtoken._asmjs_block
+        for guardtoken in block.guardtokens:
+            if guardtoken._asmjs_block is not None:
+                yield guardtoken._asmjs_block
 
 
 class CompiledLoopTokenASMJS(CompiledLoopToken):
@@ -381,35 +546,25 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
         return self.datablockwrapper.malloc_aligned(size, WORD)
 
     def add_code_to_loop(self, operations, inputargs, intoken=None):
-        # Re-write to use lower level GC operations, and record
-        # any inlined GC refs to the CLT.
+        # Re-write to use lower-level GC operations,
+        # and record any inlined GC refs to the CLT.
         gcrefs = self.inlined_gcrefs
         gcdescr = self.cpu.gc_ll_descr
         operations = gcdescr.rewrite_assembler(self.cpu, operations, gcrefs)
-        # If the intoken is a guard, it gets a new label
-        if intoken is not None:
-            if isinstance(intoken, AbstractFailDescr):
-                intoken._asmjs_gtoken.label = len(self.compiled_blocks)
         # Split the new operations up into labelled blocks.
         start_op = 0
-        first_new_label = len(self.compiled_blocks)
+        first_new_block = len(self.compiled_blocks)
+        guardtokens = []
         for i in xrange(len(operations)):
             op = operations[i]
-            # Guard descrs need to be told the current clt and
-            # allocated a guardtoken object.  They initially get
-            # label = 0, which is changed when bridged.
+            # Guard descrs need a slot on which to be told the current block.
+            # Its initially None but references the block when bridged.
             if op.is_guard():
-                guardtokenptr = self.malloc(ASMJSGUARDTOKEN_SIZE)
-                guardtoken = rffi.cast(ASMJSGUARDTOKEN_PTR, guardtokenptr)
-                guardtoken.label = 0
                 faildescr = op.getdescr()
                 assert isinstance(faildescr, AbstractFailDescr)
-                # XXX TODO: ensure this doesn't keep the clt alive
-                # even after it's been passed to free_loop_and_bridges.
-                faildescr._asmjs_clt = self
-                faildescr._asmjs_gtoken = guardtoken
+                faildescr._asmjs_block = None
+                guardtokens.append(faildescr)
             # Label descrs start a new block.
-            # They need to be told the current clt.
             elif op.getopnum() == rop.LABEL:
                 labeldescr = op.getdescr()
                 assert isinstance(labeldescr, TargetToken)
@@ -417,28 +572,34 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
                 # NB: if the first op is a label, this makes an empty block.
                 # That's OK for now; it might do some arg shuffling etc.
                 new_block = CompiledBlockASMJS(
-                    self, len(self.compiled_blocks), operations[start_op:i],
-                    intoken, inputargs, labeldescr, op.getarglist(),
+                    self, len(self.func.compiled_blocks),
+                    operations[start_op:i], intoken, inputargs,
+                    guardtokens, labeldescr, op.getarglist(),
                 )
                 self.compiled_blocks.append(new_block)
-                # Tell the label about its eventual location in the clt.
-                # XXX TODO: ensure this doesn't keep the clt alive
-                # even after it's been passed to free_loop_and_bridges.
-                labeldescr._asmjs_clt = self
-                labeldescr._asmjs_label = len(self.compiled_blocks)
+                self.func.compiled_blocks.append(new_block)
                 # Start a new block from this label.
                 start_op = i
                 intoken = labeldescr
                 inputargs = op.getarglist()
+                guardtokens = []
         # Make the final block, assuming we didn't end at a label.
         if start_op < len(operations):
+            if operations[-1].getopnum() == rop.JUMP:
+                outtoken = operations[-1].getdescr()
+                outputargs = operations[-1].getarglist()
+            else:
+                assert operations[-1].getopnum() == rop.FINISH
+                outtoken = None
+                outputargs = []
             new_block = CompiledBlockASMJS(
-                self, len(self.compiled_blocks), operations[start_op:],
-                intoken, inputargs, None, []
+                self, len(self.func.compiled_blocks), operations[start_op:],
+                intoken, inputargs, guardtokens, outtoken, outputargs
             )
             self.compiled_blocks.append(new_block)
+            self.func.compiled_blocks.append(new_block)
         # Generate the new code.
-        for i in xrange(first_new_label, len(self.compiled_blocks)):
+        for i in xrange(first_new_block, len(self.compiled_blocks)):
             self.compiled_blocks[i].generate_code()
 
     def invalidate_loop(self):
@@ -446,50 +607,47 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
 
     def redirect_loop(self, newclt):
         self.redirected_to = newclt
+        # XXX TODO: don't generate code for blocks that are no longer needed
+        #for block in self.compiled_blocks:
+        #    self.func.compiled_blocks[block.compiled_blockid] = None
 
     def emit_store_initial_gcmap(self, bldr):
+        gcmap = self.compiled_blocks[0].initial_gcmap
+        gcmapref = js.ConstInt(self.cpu.cast_ptr_to_int(gcmap))
         gcmapaddr = js.FrameGCMapAddr()
-        with bldr.emit_switch_block(js.label):
-            for block in self.compiled_blocks:
-                with bldr.emit_case_block(js.ConstInt(block.label)):
-                    gcmap = block.initial_gcmap
-                    gcmapadr = self.cpu.cast_ptr_to_int(gcmap)
-                    gcmapref = js.ConstInt(gcmapadr)
-                    bldr.emit_store(gcmapref, gcmapaddr, js.Int32)
+        bldr.emit_store(gcmapref, gcmapaddr, js.Int32)
 
     def emit_load_arguments(self, bldr):
-        # Load input args for the block being entered.
-        with bldr.emit_switch_block(js.label):
-            for block in self.compiled_blocks:
-                with bldr.emit_case_block(js.ConstInt(block.label)):
-                    block.emit_load_arguments(bldr)
+        block = self.compiled_blocks[0]
+        block.emit_load_arguments(bldr)
 
-    def emit_body(self, bldr):
-        if self.redirected_to is not None:
-            # Jump straight to the target of the redirect.
-            # It will always be in the same function as this loop.
-            loopid = js.ConstInt(self.redirected_to.compiled_loopid)
-            bldr.emit_assignment(js.loopid, loopid)
-            bldr.emit_assignment(js.label, js.zero)
-            bldr.emit_continue_loop("FUNC")
-        else:
-            # Generate the dispatch loop, with the body of
-            # each block inside a switch statement.
-            bldr.emit_comment("MAIN DISPATCH LOOP")
-            with bldr.emit_while_block(js.true, "LOOP"):
-                with bldr.emit_switch_block(js.label):
-                    for block in self.compiled_blocks:
-                        with bldr.emit_case_block(js.ConstInt(block.label)):
-                            block.emit_body(bldr)
+    def emit_set_initial_blockid(self, bldr):
+        target_clt = self
+        while target_clt.redirected_to is not None:
+            target_clt = target_clt.redirected_to
+        blockid = target_clt.compiled_blocks[0].compiled_blockid
+        if blockid != self.compiled_loopid:
+            bldr.emit_assignment(js.label, js.ConstInt(blockid))
 
 
 class CompiledBlockASMJS(object):
 
-    def __init__(self, clt, label, operations,
-                 intoken, inputargs, outtoken, outputargs):
+    def __init__(self, clt, compiled_blockid, operations,
+                 intoken, inputargs, guardtokens, outtoken, outputargs):
         self.clt = clt
         self.cpu = clt.cpu
-        self.label = label
+        self.compiled_blockid = compiled_blockid
+        self.intoken = intoken
+        self.guardtokens = guardtokens
+        self.outtoken = outtoken
+
+        # Tell the input token about its owning block.
+        # XXX TODO: avoid circular references by using weakrefs?
+        if intoken is not None:
+            if isinstance(intoken, AbstractFailDescr):
+                intoken._asmjs_block = self
+            elif isinstance(intoken, TargetToken):
+                intoken._asmjs_block = self
 
         # Remember value of invalidation counter when this block was created.
         # If it goes above this value, then GUARD_NOT_INVALIDATED fails.
@@ -541,7 +699,7 @@ class CompiledBlockASMJS(object):
 
         # The generated code will be an alternating sequence of ASMJSFragment
         # and Descr objects.  The former are static code, the later are either
-        # guards or labels for which we need to generate differnt code each
+        # guards or labels for which we need to generate different code each
         # time we're reassembled (e.g. for a new bridge, or a relocated loop).
         self.compiled_fragments = []
         self.compiled_descrs = []
@@ -582,7 +740,7 @@ class CompiledBlockASMJS(object):
     # use any references to artifacts from the trace (e.g. boxes).
 
     def emit_load_arguments(self, bldr):
-        bldr.emit_comment("LOAD INPUT ARGS FOR %d" % (self.label,))
+        bldr.emit_comment("LOAD INPUT ARGS FOR %d" % (self.compiled_blockid,))
         inputvars = self._get_inputvars_from_kinds(self.inputkinds, bldr)
         for i in xrange(len(self.inputkinds)):
             kind = self.inputkinds[i]
@@ -593,7 +751,8 @@ class CompiledBlockASMJS(object):
                 # XXX TODO: this is a hack to trick tests into passing.
                 # Necessary because we have no JITFRAME_FIXED_SIZE.
                 # But I don't think it should be needed in real life?
-                bldr.emit_store(js.zero, js.FrameSlotAddr(pos), typ)
+                if not we_are_translated():
+                    bldr.emit_store(js.zero, js.FrameSlotAddr(pos), typ)
 
     def emit_body(self, bldr):
         if SANITYCHECK:
@@ -611,64 +770,20 @@ class CompiledBlockASMJS(object):
         bldr.emit_fragment(self.compiled_fragments[-1])
 
     def emit_jump_body(self, bldr, descr):
-        assert descr._asmjs_clt.func is self.clt.func
-        target_loopid = descr._asmjs_clt.compiled_loopid
-        target_label = descr._asmjs_label
-        if target_label != self.label:
-            bldr.emit_assignment(js.label, js.ConstInt(target_label))
-        if target_loopid == self.clt.compiled_loopid:
-            bldr.emit_continue_loop("LOOP")
-        else:
-            bldr.emit_assignment(js.loopid, js.ConstInt(target_loopid))
-            bldr.emit_continue_loop("FUNC")
+        assert descr._asmjs_block.clt.func is self.clt.func
+        self.clt.func.emit_jump(bldr, descr._asmjs_block.compiled_blockid)
 
     def emit_guard_body(self, bldr, faildescr):
-        guardtoken = faildescr._asmjs_gtoken
         faillocs = faildescr._asmjs_faillocs
         failkinds = faildescr._asmjs_failkinds
         failvars = self._get_inputvars_from_kinds(failkinds, bldr)
         # If the guard has been compiled into a bridge, emit a local
         # jump to the appropriate label.  Otherwise, spill to frame.
-        if guardtoken.label != 0:
-            bldr.emit_comment("JUMP TO BRIDGE GUARD")
-            bldr.emit_assignment(js.label, js.ConstInt(guardtoken.label))
-            bldr.emit_continue_loop("LOOP")
+        target_block = faildescr._asmjs_block
+        if target_block is not None:
+            bldr.emit_comment("JUMP TO BRIDGED GUARD")
+            self.clt.func.emit_jump(bldr, target_block.compiled_blockid)
         else:
-            # Trickery: we may have compiled a bridge for this guard while
-            # while the code was executing.  We can jump into the new code
-            # at the appropriate label.
-            translate_support_code = self.cpu.translate_support_code
-            offset, size = symbolic.get_field_token(ASMJSGUARDTOKEN, "label",
-                                                    translate_support_code)
-            assert size == js.Int32.size
-            gtokref = rffi.cast(lltype.Signed, guardtoken)
-            label_adr = js.Plus(js.ConstInt(gtokref), js.ConstInt(offset))
-            label = js.HeapData(js.Int32, label_adr)
-            with bldr.emit_if_block(js.NotEqual(label, js.zero)):
-                bldr.emit_comment("INVOKE NEWLY-COMPILED BRIDGE")
-                # Spill jump args to the frame as inputargs for guard.
-                # Note that this might be at a different position to those
-                # given in faillocs, due to force_spill instructions.
-                arglocs = self._get_framelocs_from_kinds(failkinds)
-                for i in xrange(len(failkinds)):
-                    kind = failkinds[i]
-                    if kind == HOLE:
-                        continue
-                    typ = js.HeapType.from_kind(kind)
-                    val = failvars[i]
-                    pos = arglocs[i]
-                    bldr.emit_store(val, js.FrameSlotAddr(pos), typ)
-                self.emit_store_gcmap(bldr, faildescr._asmjs_gcmap0)
-                # Directly re-invoke the new version of this function.
-                # XXX TODO: fragmentize this, so we can use latest funcid
-                # rather than whatever it was at compile-time?
-                funcid = js.ConstInt(self.clt.func.compiled_funcid)
-                loopid = js.ConstInt(self.clt.compiled_loopid)
-                callargs = [funcid, js.frame, loopid, label]
-                call = js.CallFunc("jitInvoke", callargs)
-                bldr.emit_assignment(js.frame, call)
-                bldr.emit_exit()
-            # Otherwise, we have to bail all the way back to the interpreter.
             # If there might be an exception, capture it to the frame.
             if faildescr._asmjs_hasexc:
                 pos_exctyp = js.ConstInt(self.cpu.pos_exception())
@@ -886,7 +1001,7 @@ class CompiledBlockASMJS(object):
                 self.bldr.emit_comment("BEGIN JIT EXPR OP: %s" % (op,))
                 expr = genop_expr_list[op.getopnum()](self, op)
                 # XXX TODO: this causes test_caching_setfield to fail.
-                if False and self._is_final_use(op.result, self.pos + 1):
+                if self._is_final_use(op.result, self.pos + 1):
                     if SANITYCHECK:
                         assert op.result not in self.box_to_jsval
                     self.box_to_jsval[op.result] = expr
@@ -1590,7 +1705,7 @@ class CompiledBlockASMJS(object):
             loopid = js.ConstInt(target_clt.compiled_loopid)
             resvar = self.bldr.allocate_intvar()
             with ctx_allow_gc(self):
-                callargs = [funcid, frame, loopid, js.zero]
+                callargs = [funcid, frame, loopid]
                 call = js.CallFunc("jitInvoke", callargs)
                 self.bldr.emit_assignment(resvar, call)
             # Load the descr resulting from that call.
@@ -1691,7 +1806,7 @@ class CompiledBlockASMJS(object):
         argkinds = [box.type if box else HOLE for box in op.getarglist()]
         inputvars = self._get_inputvars_from_kinds(argkinds)
         self._genop_assign_to_vars(op.getarglist(), inputvars, argkinds)
-        # The target loopid may change if we're reassembled.
+        # The target blockid may change if we're reassembled.
         # Store a fragment and the descr so we can generate it correctly.
         fragment = self.bldr.capture_fragment()
         self.compiled_fragments.append(fragment)
@@ -1874,18 +1989,9 @@ class CompiledBlockASMJS(object):
             # the dynamically-generated code for the guard can find them.
             inputvars = self._get_inputvars_from_kinds(failkinds, self.bldr)
             self._genop_assign_to_vars(failargs, inputvars, failkinds)
-            # We need two potentially-differing gcmaps.
-            # One for when the guard is failed back to the interpreter, and
-            # one for when it's calling into a newly-compiled bridge.
-            # They'd be the same, execpt for stupid force-spilled items.
+            # We need a gcmap for when it's failing back to the interpreter.
             gcmap = self.allocate_gcmap_from_kinds(failkinds, faillocs)
             descr._asmjs_gcmap = gcmap
-            if self.forced_spill_frame_offset == 0:
-                descr._asmjs_gcmap0 = gcmap
-            else:
-                faillocs0 = self._get_framelocs_from_kinds(failkinds, 0)
-                gcmap0 = self.allocate_gcmap_from_kinds(failkinds, faillocs0)
-                descr._asmjs_gcmap0 = gcmap0
             # Now store all code generated so far into a fragment.
             # Then we can easily output it at each re-assembly.
             # This has to be *inside* the if-statement.
@@ -2241,10 +2347,11 @@ class ctx_allow_gc(ctx_spill_to_frame):
         gcrootmap = self.block.cpu.gc_ll_descr.gcrootmap
         if gcrootmap and gcrootmap.is_shadow_stack:
             rstaddr = js.ConstInt(gcrootmap.get_root_stack_top_addr())
-            rst = js.HeapData(js.Int32, rstaddr)
-            bldr.emit_store(js.frame, rst, js.Int32)
-            newrst = js.Plus(rst, js.word)
-            bldr.emit_store(newrst, rstaddr, js.Int32)
+            rstexpr = js.HeapData(js.Int32, rstaddr)
+            with ctx_temp_intvar(bldr, rstexpr) as rstvar:
+                bldr.emit_store(js.frame, rstvar, js.Int32)
+                newrst = js.Plus(rstvar, js.word)
+                bldr.emit_store(newrst, rstaddr, js.Int32)
         return self
 
     def __exit__(self, exc_typ, exc_val, exc_tb):

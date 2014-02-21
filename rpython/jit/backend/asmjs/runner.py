@@ -69,8 +69,8 @@ class CPU_ASMJS(AbstractLLCPU):
         def execute_token(executable_token, *args):
             clt = executable_token.compiled_loop_token
             assert isinstance(clt, CompiledLoopTokenASMJS)
-            loopid = clt.compiled_loopid
             funcid = clt.func.compiled_funcid
+            loopid = clt.compiled_loopid
             frame_info = clt.func.frame_info
             frame = self.gc_ll_descr.malloc_jitframe(frame_info)
             ll_frame = lltype.cast_opaque_ptr(llmemory.GCREF, frame)
@@ -94,7 +94,7 @@ class CPU_ASMJS(AbstractLLCPU):
                         self.set_ref_value(ll_frame, num, arg)
                 # Invoke it via the helper.
                 ll_frameadr = self.cast_ptr_to_int(ll_frame)
-                ll_frameadr = support.jitInvoke(funcid, ll_frameadr, loopid, 0)
+                ll_frameadr = support.jitInvoke(funcid, ll_frameadr, loopid)
                 ll_frame = self.cast_int_to_ptr(ll_frameadr, llmemory.GCREF)
             finally:
                 if not self.translate_support_code:
