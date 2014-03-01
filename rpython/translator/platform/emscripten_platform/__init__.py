@@ -48,11 +48,6 @@ class EmscriptenPlatform(BasePosix):
       "-s", "FORCE_ALIGNED_MEMORY=1",
       "-s", "FUNCTION_POINTER_ALIGNMENT=1",
       "-s", "ASSERTIONS=0",
-      # Some parts of the JIT assume that a function is uniquely identified
-      # by its pointer.  This makes it so, at the cost of a lot of extra
-      # padding in the function type tables.
-      # XXX TODO: fix the JIT to no longer require this.
-      "-s", "ALIASING_FUNCTION_POINTERS=0",
       # This prevents llvm optimization from throwing stuff away.
       # XXX TODO: probably there's a more nuanced way to achieve this...
       # XXX TODO: e.g. just export the defined entrypoints somehow.
@@ -73,10 +68,6 @@ class EmscriptenPlatform(BasePosix):
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
       #"-s", "SAFE_HEAP=1",
-      #"-s", "CORRUPTION_CHECK=1",
-      #"-s", "CHECK_HEAP_ALIGN=1",
-      #"-s", "CHECK_OVERFLOWS=1",
-      #"-s", "CHECK_SIGNED_OVERFLOWS=1",
     ]
 
     link_flags = cflags + [
@@ -91,7 +82,20 @@ class EmscriptenPlatform(BasePosix):
       #-s EXPORTED_FUNCTIONS="['_main', '_free', '_pypy_execute_source', '_pypy_setup_home', '_RPython_StartupCode']"\
     ]
 
+    extra_environ = {
+        # We're still trialling fastcomp, here's a handy way to turn it off.
+        #"EMCC_FAST_COMPILER": "0",
+    }
+ 
+    def __init__(self, *args, **kwds):
+        os.environ.update(self.extra_environ)
+        super(EmscriptenPlatform, self).__init__(*args, **kwds)
+
     def execute(self, executable, args=None, env=None, *a, **k):
+        if env is None:
+            os.environ.update(self.extra_environ)
+        else:
+            env.update(self.extra_environ)
         # The generated file is just javascript, so it's not executable.
         # Instead we arrange for it to be run with a javascript shell.
         if args is None:
