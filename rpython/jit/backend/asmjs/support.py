@@ -23,12 +23,14 @@ import contextlib
 from rpython.rlib.parsing.tree import RPythonVisitor
 from rpython.rlib.parsing.ebnfparse import parse_ebnf, make_parse_function
 from rpython.rtyper.lltypesystem import lltype, rffi, ll2ctypes
+from rpython.translator.tool.cbuild import ExternalCompilationInfo
 
 # First, we have the definitions of the javascript JIT helper functions.
 # These have a native javascript implementation when translated; when
 # untranslated they are implemented atop a rather nasty asmjs-to-python
 # transplier.
 
+compilation_info = ExternalCompilationInfo(includes=['library_jit.h'])
 
 def jsexternal(args, result, **kwds):
     """Decorator to define stubbed-out external javascript functions.
@@ -42,6 +44,7 @@ def jsexternal(args, result, **kwds):
         kwds.setdefault('_callable', func)
         kwds.setdefault('threadsafe', True)
         kwds.setdefault('random_effects_on_gcobjs', False)
+        kwds.setdefault('compilation_info', compilation_info)
         return rffi.llexternal(func.__name__, args, result, **kwds)
     return do_register
 
