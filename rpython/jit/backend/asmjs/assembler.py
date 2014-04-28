@@ -116,7 +116,7 @@ class AssemblerASMJS(object):
             descr = final_op.getdescr()
             assert isinstance(descr, TargetToken)
             target_block = descr._asmjs_block
-            if target_block.clt is clt:
+            if target_block.clt.func is func:
                 func.reassemble()
             else:
                 target_block.clt.func.merge_with(func)
@@ -139,7 +139,7 @@ class AssemblerASMJS(object):
             descr = final_op.getdescr()
             assert isinstance(descr, TargetToken)
             target_block = descr._asmjs_block
-            if target_block.clt is clt:
+            if target_block.clt.func is clt.func:
                 clt.func.reassemble()
             else:
                 target_block.clt.func.merge_with(clt.func)
@@ -202,6 +202,7 @@ class CompiledFuncASMJS(object):
         if SANITYCHECK:
             assert self.merged_into is None
             assert other.merged_into is None
+            assert other is not self
         # Merge into the func with the largest number of existing loops.
         # This will mean we generate generate fewer redirects.
         #if len(self.compiled_loops) < len(other.compiled_loops):
