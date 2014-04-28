@@ -37,20 +37,27 @@ class EmscriptenPlatform(BasePosix):
     standalone_only = []
     shared_only = []
 
+    llvm_opts = ["-constmerge"] #, "-mergefunc"]
+
     cflags = [
       # Misc helpful/sensible flags.
+      "-v",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
-      # Optimizations!
+      # General llvm optimizations.  These seem to give a good tradeoff
+      # between size and speed of the generated code.
+      "-Os",
+      "--llvm-lto", "3",
+      "--llvm-opts", repr(["-Os"] + llvm_opts),
+      "-s", "INLIMING_LIMIT=20",
       # These are things that we've found to work OK with the generated code.
-      # Try switching them off if the resulting javascript mis-behaves.
-      "-O3",
+      # and give a good performance/code-size tradeoff.
       "-s", "FORCE_ALIGNED_MEMORY=1",
       "-s", "FUNCTION_POINTER_ALIGNMENT=1",
       "-s", "ASSERTIONS=0",
       # This prevents llvm optimization from throwing stuff away.
-      # XXX TODO: probably there's a more nuanced way to achieve this...
-      # XXX TODO: e.g. just export the defined entrypoints somehow.
+      # It's a useful default for intermediate compilations, but we replace
+      # it with an explicit list of exports for the final executable.
       "-s", "EXPORT_ALL=1",
       # Sadly, asmjs requires a fixed pre-allocated array for memory.
       # We default to a modest 64MB; this can be changed in the JS at runtime.
@@ -63,23 +70,22 @@ class EmscriptenPlatform(BasePosix):
       "-I", os.path.dirname(__file__),
       # For compiling with JIT.
       # XXX TODO: only include this when jit is enabled.
-      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
+      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
       #"-s", "SAFE_HEAP=1",
     ]
 
-    link_flags = cflags + [
+    link_flags = list(cflags)
+    link_flags += [
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
-      "-g2",
+      #"-g2",
       # Necessary for ctypes support.
       #"-s", "DLOPEN_SUPPORT=1",
       #"-s", "INCLUDE_FULL_LIBRARY=1",
       # XXX TODO: use DEFAULT_LIBRARY_FUNCS_TO_INCLUDE to force the ffi lib
-      # XXX TODO: something like this with just the entry-points we want
-      #-s EXPORTED_FUNCTIONS="['_main', '_free', '_pypy_execute_source', '_pypy_setup_home', '_RPython_StartupCode']"\
     ]
 
     extra_environ = {
@@ -117,6 +123,55 @@ class EmscriptenPlatform(BasePosix):
 
     def library_dirs_for_libffi(self):
         return []
+
+    def gen_makefile(self, cfiles, eci, exe_name=None, path=None,
+                     shared=False):
+        m = super(EmscriptenPlatform, self).gen_makefile(
+            cfiles, eci, exe_name, path, shared
+        )
+        ldflags = m.lines[m.defs["LDFLAGS"]].value
+        cflags = m.lines[m.defs["CFLAGS"]].value
+        # Embed parts of the build dir as files in the final executable.
+        # This is necessary so the pypy interpreter can find its files,
+        # but is useless for generic rpython apps.
+        # XXX TODO: find a more elegant way to achieve this only when needed.
+        # There's apparently a "VFS" system under development for emscripten
+        # which might make the need for this go away.
+        #ldflags.extend([
+        #  "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
+        #  "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
+        #])
+        # Export only the entry-point functions, plus a few generally-useful
+        # helper functions.
+        idx = ldflags.index("EXPORT_ALL=1")
+        del ldflags[idx - 1 : idx + 1]
+        exports = ("main", "free") + eci.export_symbols
+        exports = repr(["_" + nm for nm in exports])
+        ldflags.extend([
+            "-s", repr("EXPORTED_FUNCTIONS=%s" % (exports,)),
+        ])
+        # Do more aggressive (hence more expensive) optimization for final
+        # linkage.  Note that this only applies to emscripten itself; llvm
+        # still sees "-Os" due to separate use of --llvm-opts.
+        # The most important thing this enables is the registerizeHarder pass.
+        ldflags.remove("-Os")
+        ldflags.extend([
+            "-O3",
+        ])
+        # Ensure that --llvm-opts appears properly quoted in the makefile.
+        idx = ldflags.index("--llvm-opts")
+        ldflags[idx + 1] = repr(ldflags[idx + 1])
+        idx = cflags.index("--llvm-opts")
+        cflags[idx + 1] = repr(cflags[idx + 1])
+        # Use closure on the non-asm javascript.
+        # This will eliminate any names not exported above.
+        # XXX TODO: need to include FS-using code before doing this.
+        # Maybe we can do it in a separate pass?
+        #ldflags.extend([
+        #    "--closure", "1",
+        #])
+        m.lines[m.defs["LDFLAGS_LINK"]].value = list(ldflags)
+        return m 
 
     def execute_makefile(self, path_to_makefile, extra_opts=[]):
         if isinstance(path_to_makefile, GnuMakefile):
