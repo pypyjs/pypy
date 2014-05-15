@@ -1115,6 +1115,8 @@ class CompiledBlockASMJS(object):
         return True
 
     def _genop_realize_box(self, box):
+        if not isinstance(box, Box):
+            return box
         boxexpr = self._get_jsval(box)
         if isinstance(boxexpr, js.Variable):
             return boxexpr
@@ -1276,6 +1278,8 @@ class CompiledBlockASMJS(object):
         dstaddr = js.Plus(dstbase,
                           js.Plus(basesize, js.IMul(dstoffset, itemsize)))
         # Memcpy required number of bytes.
+        # XXX TODO: large function overhead for this simple call, since we
+        # go out into the main module.  Inline it, or use a local copy?
         nbytes = js.IMul(lengthbox, itemsize)
         self.bldr.emit_expr(js.CallFunc("memcpy", [dstaddr, srcaddr, nbytes]))
 
@@ -1455,8 +1459,8 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_add_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._get_jsval(op.getarg(0))
-        rhs = self._get_jsval(op.getarg(1))
+        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
         res = self._get_jsval(op.result)
         self.bldr.emit_assignment(res, js.SignedCast(js.Plus(lhs, rhs)))
         did_overflow = js.Or(js.And(js.GreaterThanEq(lhs, js.zero),
@@ -1473,8 +1477,8 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_sub_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._get_jsval(op.getarg(0))
-        rhs = self._get_jsval(op.getarg(1))
+        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
         res = self._get_jsval(op.result)
         self.bldr.emit_assignment(res, js.SignedCast(js.Minus(lhs, rhs)))
         did_overflow = js.Or(js.And(js.GreaterThanEq(rhs, js.zero),
@@ -1491,8 +1495,8 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_mul_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._get_jsval(op.getarg(0))
-        rhs = self._get_jsval(op.getarg(1))
+        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
         res = self._get_jsval(op.result)
         # To check for overflow in the general case, we have to perform the
         # multiplication twice - once as double and once as an int, then
