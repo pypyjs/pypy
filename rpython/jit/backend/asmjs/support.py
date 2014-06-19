@@ -42,7 +42,6 @@ def jsexternal(args, result, **kwds):
     """
     def do_register(func):
         kwds.setdefault('_callable', func)
-        kwds.setdefault('threadsafe', True)
         kwds.setdefault('random_effects_on_gcobjs', False)
         kwds.setdefault('compilation_info', compilation_info)
         return rffi.llexternal(func.__name__, args, result, **kwds)

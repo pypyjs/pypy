@@ -104,12 +104,12 @@ class CPU_ASMJS(AbstractLLCPU):
         return execute_token
 
     def compile_loop(self, inputargs, operations, looptoken,
-                     log=True, name=''):
+                     log=True, name='', logger=None):
         return self.assembler.assemble_loop(name, inputargs, operations,
                                             looptoken, log=log)
 
     def compile_bridge(self, faildescr, inputargs, operations,
-                       original_loop_token, log=True):
+                       original_loop_token, log=True, logger=None):
         clt = original_loop_token.compiled_loop_token
         clt.compiling_a_bridge()
         return self.assembler.assemble_bridge(faildescr, inputargs, operations,

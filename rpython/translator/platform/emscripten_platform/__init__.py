@@ -125,9 +125,11 @@ class EmscriptenPlatform(BasePosix):
         return []
 
     def gen_makefile(self, cfiles, eci, exe_name=None, path=None,
-                     shared=False):
+                     shared=False, headers_to_precompile=[],
+                     no_precompile_cfiles=[]):
         m = super(EmscriptenPlatform, self).gen_makefile(
-            cfiles, eci, exe_name, path, shared
+            cfiles, eci, exe_name, path, shared,
+            headers_to_precompile, no_precompile_cfiles,
         )
         ldflags = m.lines[m.defs["LDFLAGS"]].value
         cflags = m.lines[m.defs["CFLAGS"]].value
