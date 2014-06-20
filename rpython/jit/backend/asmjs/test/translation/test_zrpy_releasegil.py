@@ -3,6 +3,8 @@ from rpython.jit.backend.llsupport.test.zrpy_releasegil_test import ReleaseGILTe
 
 
 class TestShadowStack(ReleaseGILTests):
+    compile_kwds = ReleaseGILTests.compile_kwds.copy()
+    compile_kwds.update({"platform": "emscripten", "backend": "js"})
     gcrootfinder = "shadowstack"
 
     # XXX TODO: this needs to read a logfile written by the process, which

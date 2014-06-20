@@ -12,8 +12,9 @@ from rpython.rlib.jit import JitDriver, dont_look_inside
 from rpython.rlib.jit import elidable, unroll_safe
 from rpython.jit.backend.llsupport.gc import GcLLDescr_framework
 from rpython.tool.udir import udir
-from rpython.config.translationoption import DEFL_GC
 from rpython.config.config import ConfigError
+from rpython.config.translationoption import (DEFL_GC,
+                                              get_combined_translation_config)
 
 
 class X(object):
@@ -116,7 +117,7 @@ def run(cbuilder, args=''):
 
 class BaseFrameworkTests(object):
     gc = DEFL_GC
-    compile_kwds = {}
+    compile_kwds = { "thread": True }
 
     def setup_class(cls):
         funcs = []
@@ -168,7 +169,7 @@ class BaseFrameworkTests(object):
             GcLLDescr_framework.DEBUG = True
             cls.cbuilder = compile(get_entry(allfuncs), cls.gc,
                                    gcrootfinder=cls.gcrootfinder, jit=True,
-                                   thread=True, **cls.compile_kwds)
+                                   **cls.compile_kwds)
         except ConfigError, e:        
             assert str(e).startswith('invalid value asmgcc')
             py.test.skip('asmgcc not supported')

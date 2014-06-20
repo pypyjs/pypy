@@ -14,7 +14,7 @@ from rpython.jit.backend.asmjs.arch import (WORD,
 
 
 class CPU_ASMJS(AbstractLLCPU):
-    """'CPU' for emitting and running asmjs javascript.
+    """Quote-unquote 'CPU' for emitting and running asmjs javascript.
 
     This inherits from AbstractLLCPU because it interfaces with the rest of
     the interpreter in the same way, via low-level descrs.  But the details

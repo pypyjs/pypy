@@ -5,4 +5,4 @@ class TestShadowStack(CompileFrameworkTests):
     compile_kwds = CompileFrameworkTests.compile_kwds.copy()
     compile_kwds.update({"platform": "emscripten", "backend": "js"})
     gcrootfinder = "shadowstack"
-
+    gc = "incminimark"

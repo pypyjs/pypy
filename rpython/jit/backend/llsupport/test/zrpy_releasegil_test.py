@@ -11,7 +11,7 @@ from rpython.tool.udir import udir
 
 
 class ReleaseGILTests(BaseFrameworkTests):
-    compile_kwds = dict(enable_opts=ALL_OPTS_NAMES, thread=True)
+    compile_kwds = dict(thread=True)
 
     def define_simple(self):
         class Glob:
