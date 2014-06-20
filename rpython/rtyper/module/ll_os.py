@@ -766,8 +766,12 @@ class RegisterOs(BaseLazyRegistering):
 
     @registering_if(os, 'initgroups')
     def register_os_initgroups(self):
+        compilation_info = ExternalCompilationInfo(
+            includes = ['grp.h']
+        )
         c_initgroups = self.llexternal('initgroups',
-                                       [rffi.CCHARP, rffi.PID_T], rffi.INT)
+                                       [rffi.CCHARP, rffi.PID_T], rffi.INT,
+                                       compilation_info=compilation_info)
 
         def initgroups_llimpl(user, group):
             n = c_initgroups(user, rffi.cast(rffi.PID_T, group))
@@ -1760,7 +1764,7 @@ class RegisterOs(BaseLazyRegistering):
             'openpty',
             [rffi.INTP, rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.INT,
-            compilation_info=ExternalCompilationInfo(libraries=['util']))
+            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=['pty.h']))
         def openpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
             slave_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
@@ -1784,7 +1788,7 @@ class RegisterOs(BaseLazyRegistering):
             'forkpty',
             [rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.PID_T,
-            compilation_info=ExternalCompilationInfo(libraries=['util']))
+            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=['pty.h']))
         def forkpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
             master_p[0] = rffi.cast(rffi.INT, -1)
