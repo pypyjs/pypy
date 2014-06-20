@@ -120,3 +120,10 @@
 #  define MS_WINDOWS    /* a synonym */
 #endif
 #endif
+
+/* The small positive value that can be a valid object pointer. */
+#ifdef EMSCRIPTEN
+#  define PYPY_POINTER_MIN 8
+#else
+#  define PYPY_POINTER_MIN 8192
+#endif

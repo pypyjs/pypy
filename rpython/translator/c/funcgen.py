@@ -818,8 +818,8 @@ class FunctionCodeGenerator(object):
 
     def OP_DEBUG_NONNULL_POINTER(self, op):
         expr = self.expr(op.args[0])
-        return 'if ((-8192 <= (long)%s) && (((long)%s) < 8192)) abort();' % (
-            expr, expr)
+        return 'if ((-%s <= (long)%s) && (((long)%s) < %s)) abort();' % (
+            "PYPY_POINTER_MIN", expr, expr, "PYPY_POINTER_MIN")
 
     def OP_INSTRUMENT_COUNT(self, op):
         counter_label = op.args[1].value
