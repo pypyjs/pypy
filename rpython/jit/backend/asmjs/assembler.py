@@ -583,7 +583,6 @@ class CompiledLoopTokenASMJS(CompiledLoopToken):
                 outtoken = operations[-1].getdescr()
                 outputargs = operations[-1].getarglist()
             else:
-                assert operations[-1].getopnum() == rop.FINISH
                 outtoken = None
                 outputargs = []
             new_block = CompiledBlockASMJS(
@@ -683,6 +682,7 @@ class CompiledBlockASMJS(object):
 
         # Ensure the block ends with an explicit jump or return.
         # This simplifies calculation of box longevity below.
+        # Also some tests don't include an explicit FINISH operation.
         FINAL_OPS = (rop.JUMP, rop.FINISH)
         if not operations or operations[-1].getopnum() not in FINAL_OPS:
             if outtoken is not None:
