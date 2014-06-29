@@ -95,13 +95,17 @@ translation_optiondescription = OptionDescription(
                default=IS_64_BITS, cmdline="--gcremovetypeptr"),
     ChoiceOption("gcrootfinder",
                  "Strategy for finding GC Roots (framework GCs only)",
-                 ["n/a", "shadowstack", "asmgcc"],
+                 ["n/a", "shadowstack", "optzshadowstack", "asmgcc"],
                  "shadowstack",
                  cmdline="--gcrootfinder",
                  requires={
                      "shadowstack": [("translation.gctransformer", "framework")],
+                     "optzshadowstack": [("translation.gctransformer", "framework")],
                      "asmgcc": [("translation.gctransformer", "framework"),
                                 ("translation.backend", "c")],
+#                    },
+#                 suggests={
+#                     "asmgcc": [("translation.backend", "c")],
                     }),
 
     # other noticeable options
@@ -275,13 +279,18 @@ translation_optiondescription = OptionDescription(
                  "target platform", ['host'] + PLATFORMS, default='host',
                  cmdline='--platform',
                  requires={"emscripten": [
-                             ("translation.gcrootfinder", "shadowstack"),
                              ("translation.shared", False),
                              ("translation.thread", False),
                              ("translation.no__thread", True),
                            ]},
-                 suggests={"arm": [("translation.gcrootfinder", "shadowstack"),
-                                   ("translation.jit_backend", "arm")]}),
+                 suggests={"arm": [
+                               ("translation.gcrootfinder", "shadowstack"),
+                               ("translation.jit_backend", "arm"),
+                            ],
+                           "emscripten": [
+                               ("translation.gcrootfinder", "shadowstack"),
+                            ]},
+    ),
 
 ])
 

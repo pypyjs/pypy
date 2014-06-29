@@ -373,6 +373,9 @@ class GcRootMap_shadowstack(object):
         rst_addr = llop.gc_adr_of_root_stack_top(llmemory.Address)
         return rffi.cast(lltype.Signed, rst_addr)
 
+class GcRootMap_optzshadowstack(GcRootMap_shadowstack):
+    pass
+
 class WriteBarrierDescr(AbstractDescr):
     def __init__(self, gc_ll_descr):
         self.llop1 = gc_ll_descr.llop1

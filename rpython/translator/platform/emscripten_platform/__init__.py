@@ -86,6 +86,7 @@ class EmscriptenPlatform(BasePosix):
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
       #"-s", "SAFE_HEAP=1",
+      #"-DRPY_ASSERT",
     ]
 
     cflags = list(emcc_flags) + \
