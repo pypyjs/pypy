@@ -437,6 +437,12 @@ class ShadowStackFrameworkGcPolicy(BasicFrameworkGcPolicy):
         from rpython.memory.gctransform import shadowstack
         return shadowstack.ShadowStackFrameworkGCTransformer(self.db.translator)
 
+class OptzShadowStackFrameworkGcPolicy(BasicFrameworkGcPolicy):
+
+    def gettransformer(self):
+        from rpython.memory.gctransform import optzshadowstack
+        return optzshadowstack.OptzShadowStackFrameworkGCTransformer(self.db.translator)
+
 class AsmGcRootFrameworkGcPolicy(BasicFrameworkGcPolicy):
 
     def gettransformer(self):
@@ -455,6 +461,7 @@ name_to_gcpolicy = {
     'ref': RefcountingGcPolicy,
     'none': NoneGcPolicy,
     'framework+shadowstack': ShadowStackFrameworkGcPolicy,
+    'framework+optzshadowstack': OptzShadowStackFrameworkGcPolicy,
     'framework+asmgcc': AsmGcRootFrameworkGcPolicy
 }
 

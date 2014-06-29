@@ -89,6 +89,7 @@ class EmscriptenPlatform(BasePosix):
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
       #"-s", "SAFE_HEAP=1",
+      #"-DRPY_ASSERT",
     ]
 
     link_flags = list(cflags)
@@ -146,9 +147,6 @@ class EmscriptenPlatform(BasePosix):
         )
         ldflags = m.lines[m.defs["LDFLAGS"]].value
         cflags = m.lines[m.defs["CFLAGS"]].value
-        # XXX TODO: remove this:
-        idx = ldflags.index("--memory-init-file")
-        ldflags[idx + 1] = "1"
         # Export only the entry-point functions, plus a few generally-useful
         # helper functions.
         idx = ldflags.index("EXPORT_ALL=1")

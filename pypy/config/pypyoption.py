@@ -49,9 +49,9 @@ translation_modules.update([
 
 working_js_modules = default_modules.copy()
 working_js_modules.update(dict.fromkeys(
-    ["js", "_md5", "_sha", "cStringIO", "itertools", "time", "rctime",
+    ["js", "_md5", "_sha", "cStringIO", "itertools", "time", #"rctime",
      "struct", "array", "binascii", "_collections", "_pypyjson",
-     "_warnings", "_csv", "unicodedata", "_rawffi"]
+     "_warnings", "_csv",]# "unicodedata", "_rawffi"]
 ))
 
 # XXX this should move somewhere else, maybe to platform ("is this posixish"
