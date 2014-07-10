@@ -49,7 +49,7 @@ translation_modules.update([
 
 working_js_modules = default_modules.copy()
 working_js_modules.update(dict.fromkeys(
-    ["_md5", "_sha", "cStringIO", "itertools", "time", "rctime",
+    ["js", "_md5", "_sha", "cStringIO", "itertools", "time", "rctime",
      "struct", "array", "binascii", "_collections", "_pypyjson",
      "_warnings", "_csv", "unicodedata", "_rawffi"]
 ))

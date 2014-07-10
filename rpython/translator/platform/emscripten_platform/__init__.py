@@ -72,6 +72,7 @@ class EmscriptenPlatform(BasePosix):
       # XXX TODO: only include this when jit is enabled.
       "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
       "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_ffi.js"),
+      "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_emjs.js"),
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
