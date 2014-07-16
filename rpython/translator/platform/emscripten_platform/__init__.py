@@ -95,6 +95,8 @@ class EmscriptenPlatform(BasePosix):
     extra_environ = {
         # We're still trialling fastcomp, here's a handy way to turn it off.
         #"EMCC_FAST_COMPILER": "0",
+        # Needed when running closure compiler.
+        "JAVA_HEAP_SIZE": "4096m",
     }
  
     def __init__(self, *args, **kwds):
