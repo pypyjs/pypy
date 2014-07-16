@@ -21,3 +21,5 @@ pypy/translator/goal/target*-c
 release/
 rpython/_cache
 include/numpy
+pypy-c
+pypy-js
