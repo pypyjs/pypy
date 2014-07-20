@@ -4,6 +4,8 @@
 #   * transparent conversion of primitive types; this is
 #     particularly useful when defining callback functions.
 #   * "Method" objects and nice handling of 'this'.
+#   * split out the emjs_* functions to a separate file, add python stub
+#     implementations for testing purposes.
 #   * make String, Object, Function etc be proper subclasses of Value.
 #   * maybe rename "Value" to "Handle"..?
 #
@@ -34,6 +36,8 @@ import ctypes.util
 from pypy.interpreter.error import OperationError
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import TypeDef, GetSetProperty
+from pypy.interpreter.function import Function as InterpFunction
+from pypy.interpreter.function import Method as InterpMethod
 from pypy.interpreter.gateway import interp2app, unwrap_spec, WrappedDefault
 
 
@@ -91,17 +95,9 @@ emjs_dup = external('emjs_dup',
                     [EMJS_HANDLE_TP],
                     EMJS_HANDLE_TP)
 
-emjs_get = external('emjs_get',
-                    [rffi.CCHARP],
-                    EMJS_HANDLE_TP)
-
-emjs_set = external('emjs_set',
-                    [rffi.CCHARP, EMJS_HANDLE_TP],
-                    EMJS_HANDLE_TP)
-
-emjs_delete = external('emjs_delete',
-                       [rffi.CCHARP],
-                       EMJS_HANDLE_TP)
+emjs_globals = external('emjs_globals',
+                        [],
+                        EMJS_HANDLE_TP)
 
 emjs_prop_get = external('emjs_prop_get',
                          [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
@@ -408,44 +404,79 @@ class W_Value(W_Root):
             return space.wrap(buf.str(n))
 
     def descr__eq__(self, space, w_other):
-        res = emjs_op_equiv(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_equiv(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__ne__(self, space, w_other):
-        res = emjs_op_nequiv(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_nequiv(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__lt__(self, space, w_other):
-        res = emjs_op_lt(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_lt(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__le__(self, space, w_other):
-        res = emjs_op_lteq(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_lteq(self.handle, h_other)
         return space.newbool(bool(res))
         
     def descr__gt__(self, space, w_other):
-        res = emjs_op_gt(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_gt(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__ge__(self, space, w_other):
-        res = emjs_op_gteq(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            res = emjs_op_gteq(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__bool__(self, space):
         res = emjs_check(self.handle)
         return space.newbool(bool(res))
 
+    # The semntics of __getitem__ and __getattr__ are equivalent for
+    # javascript objects.  We use __getattr__ to provide python-friendly
+    # conveniences:
+    #
+    #    * raise AttributeError for undefined attributes
+    #    * bind 'this' when loading callables as attributes
+    #
+    # This seems to give a good balance between js and python semantics.
+
     @unwrap_spec(name=str)
-    def descr__getattr__(self, space, name):
-        # XXX TODO: raise AttributeError for 'undefined'.
-        # XXX TODO: method lookup semantics with binding of 'this'.
+    def descr__getitem__(self, space, name):
         h_res = emjs_prop_get_str(self.handle, name)
         return _wrap_handle(space, h_res)
 
     @unwrap_spec(name=str)
+    def descr__setitem__(self, space, name, w_value):
+        with _unwrap_handle(space, w_value) as h_value:
+            res = emjs_prop_set_str(self.handle, name, h_value)
+        _check_error(space, res)
+
+    @unwrap_spec(name=str)
+    def descr__delitem__(self, space, name):
+        res = emjs_prop_delete_str(self.handle, name)
+        _check_error(space, res)
+
+    @unwrap_spec(name=str)
+    def descr__getattr__(self, space, name):
+        h_res = emjs_prop_get_str(self.handle, name)
+        if h_res == EMJS_UNDEFINED:
+            raise OperationError(space.w_AttributeError, space.wrap(name))
+        _check_error(space, h_res)
+        if emjs_typeof(h_res) == EMJS_TYPE_FUNCTION:
+            return space.wrap(W_Method(h_res, self))
+        else:
+            return space.wrap(W_Value(h_res))
+
+    @unwrap_spec(name=str)
     def descr__setattr__(self, space, name, w_value):
-        value = _unwrap_handle(space, w_value)
-        res = emjs_prop_set_str(self.handle, name, value)
+        with _unwrap_handle(space, w_value) as h_value:
+            res = emjs_prop_set_str(self.handle, name, h_value)
         _check_error(space, res)
 
     @unwrap_spec(name=str)
@@ -454,47 +485,58 @@ class W_Value(W_Root):
         _check_error(space, res)
 
     def descr__add__(self, space, w_other):
-        h_res = emjs_op_add(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_add(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__sub__(self, space, w_other):
-        h_res = emjs_op_sub(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_sub(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__mul__(self, space, w_other):
-        h_res = emjs_op_mul(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_mul(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__div__(self, space, w_other):
-        h_res = emjs_op_div(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_div(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__truediv__(self, space, w_other):
-        h_res = emjs_op_div(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_div(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__mod__(self, space, w_other):
-        h_res = emjs_op_mod(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_mod(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__lshift__(self, space, w_other):
-        h_res = emjs_op_bw_lshift(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_bw_lshift(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__rshift__(self, space, w_other):
-        h_res = emjs_op_bw_rshift(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_bw_rshift(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__and__(self, space, w_other):
-        h_res = emjs_op_bw_and(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_bw_and(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__or__(self, space, w_other):
-        h_res = emjs_op_bw_or(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_bw_or(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__xor__(self, space, w_other):
-        h_res = emjs_op_bw_xor(self.handle, _unwrap_handle(space, w_other))
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = emjs_op_bw_xor(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__neg__(self, space):
@@ -510,11 +552,12 @@ class W_Value(W_Root):
         return _wrap_handle(space, h_res)
 
     def descr__contains__(self, space, w_item):
-        res = emjs_op_in(_unwrap_handle(space, w_item), self.handle)
+        with _unwrap_handle(space, w_item) as h_item:
+            res = emjs_op_in(h_item, self.handle)
         _check_error(space, res)
         return space.newbool(bool(res))
 
-    def descr__len__(self, space, w_item):
+    def descr__len__(self, space):
         res = emjs_length(self.handle)
         _check_error(space, res)
         return space.wrap(res)
@@ -539,16 +582,74 @@ def _wrap_handle(space, handle, callback=None):
     return space.wrap(W_Value(handle, callback))
 
 
-# XXX TODO: have this automagically make handles for e.g strings and ints?
-# It would have to become a context-manager to free them automatically.
-def _unwrap_handle(space, w_value):
-    value = space.interp_w(W_Value, w_value)
-    return value.handle
+class _unwrap_handle(object):
+    """Context-manager for unwrapping an app-level object to a js-level handle.
+
+    This class can manage both existing W_Value instances, and the transient
+    conversion of immutable app-level datatypes such as ints and strings.  It
+    needs to be a context-manager to allow proper lifetime management of
+    such transient handles.
+    """
+
+    def __init__(self, space, w_value):
+        self.space = space
+        self.w_value = w_value
+        self.h_transient = EMJS_ERROR
+        self.cb_transient = None
+
+    def __enter__(self):
+        space = self.space
+        w_value = self.w_value
+        # Optimistically assume that it's a proper W_Value instance.
+        try:
+            return space.interp_w(W_Value, w_value).handle
+        except OperationError, e:
+            if not e.match(space, space.w_TypeError):
+                raise
+            # Try to convert it to a transient W_Value instance.
+            h_value = self._convert_transiently()
+            if h_value == EMJS_ERROR:
+                raise
+            self.h_transient = h_value
+            return h_value
+
+    def __exit__(self, exc_typ, exc_val, exc_tb):
+        if self.h_transient != EMJS_ERROR:
+            emjs_free(self.h_transient)
+
+    def _convert_transiently(self):
+        space = self.space
+        w_value = self.w_value
+        if space.isinstance_w(w_value, space.w_int):
+            return emjs_make_int32(space.int_w(w_value))
+        if space.isinstance_w(w_value, space.w_long):
+            return emjs_make_int32(space.int_w(w_value))
+        if space.isinstance_w(w_value, space.w_float):
+            return emjs_make_double(space.float_w(w_value))
+        if space.isinstance_w(w_value, space.w_str):
+            value = space.str_w(w_value)
+            return emjs_make_strn(value, len(value))
+        # XXX TODO: auto-convert functions to callbacks.
+        #if space.isinstance_w(w_value, InterpFunction)):
+        #    h_cb, cb = _make_callback(space, w_value, ())
+        #    self.cb_transient = cb 
+        #    return h_cb
+        #if space.isinstance_w(w_value, space.wrap(InterpMethod)):
+        #    h_cb, cb = _make_callback(space, w_value, ())
+        #    self.cb_transient = cb 
+        #    return h_cb
+        return EMJS_ERROR
 
 
 def _check_error(space, result):
     if result == EMJS_ERROR:
         _raise_error(space)
+
+
+def globals(space):
+    """Get a reference to the global scope 'this' object."""
+    h = emjs_globals()
+    return _wrap_handle(space, h)
 
 
 @unwrap_spec(data=str)
@@ -559,34 +660,35 @@ def eval(space, data):
 
 
 def new(space, w_fn, args_w):
-    h_fn = _unwrap_handle(space, w_fn)
-    h_args = emjs_make_array(len(args_w))
-    _check_error(space, h_args)
-    for i in xrange(len(args_w)):
-        res = emjs_prop_set_int(h_args, i, _unwrap_handle(space, args_w[i]))
-        _check_error(space, res)
-    h_res = emjs_new(h_fn, h_args)
+    with _unwrap_handle(space, w_fn) as h_fn:
+        h_args = emjs_make_array(len(args_w))
+        _check_error(space, h_args)
+        for i in xrange(len(args_w)):
+            with _unwrap_handle(space, args_w[i]) as h_arg:
+                res = emjs_prop_set_int(h_args, i, h_arg)
+            _check_error(space, res)
+        h_res = emjs_new(h_fn, h_args)
     return _wrap_handle(space, h_res)
 
 
 def instanceof(space, w_lhs, w_rhs):
-    h_lhs = _unwrap_handle(space, w_lhs)
-    h_rhs = _unwrap_handle(space, w_rhs)
-    res = emjs_op_instanceof(h_lhs, h_rhs)
+    with _unwrap_handle(space, w_lhs) as h_lhs:
+        with  _unwrap_handle(space, w_rhs) as h_rhs:
+            res = emjs_op_instanceof(h_lhs, h_rhs)
     _check_error(space, res)
     return space.newbool(bool(res))
 
 
 def urshift(space, w_lhs, w_rhs):
-    h_lhs = _unwrap_handle(space, w_lhs)
-    h_rhs = _unwrap_handle(space, w_rhs)
-    h_res = emjs_op_bw_urshift(h_lhs, h_rhs)
+    with _unwrap_handle(space, w_lhs) as h_lhs:
+        with  _unwrap_handle(space, w_rhs) as h_rhs:
+            h_res = emjs_op_bw_urshift(h_lhs, h_rhs)
     return _wrap_handle(space, h_res)
 
 
 def uint32(space, w_value):
-    h_value = _unwrap_handle(space, w_value)
-    res = emjs_read_uint32(h_value)
+    with _unwrap_handle(space, w_value) as h_value:
+        res = emjs_read_uint32(h_value)
     return space.wrap(res)
 
 
@@ -635,18 +737,29 @@ def Array(space, w_items=None, size=0):
                     raise
                 break
             else:
-                item = _unwrap_handle(space, w_item)
-                res = emjs_prop_set_int(h_res, idx, item)
+                with _unwrap_handle(space, w_item) as h_item:
+                    res = emjs_prop_set_int(h_res, idx, h_item)
                 idx += 1
     return _wrap_handle(space, h_res)
 
 
 def Function(space, w_callback, __args__):
-    callback = Callback(space, w_callback, __args__)
+    h_res, callback = _make_callback(space, w_callback, __args__)
+    return _wrap_handle(space, h_res, callback)
+
+
+class W_Method(W_Value):
+
+    def __init__(self, handle, w_ctx):
+        W_Value.__init__(self, handle)
+        self.w_ctx = w_ctx
+
+
+def _make_callback(space, w_callback, args):
+    callback = Callback(space, w_callback, args)
     dataptr = rffi.cast(rffi.VOIDP, callback.id)
     ll_dispatch_callback = rffi.llhelper(CALLBACK_TP, dispatch_callback)
-    h_res = emjs_make_callback(ll_dispatch_callback, dataptr)
-    return _wrap_handle(space, h_res, callback)
+    return emjs_make_callback(ll_dispatch_callback, dataptr), callback
 
 
 class Callback(object):
@@ -707,14 +820,15 @@ def dispatch_callback(dataptr, h_args):
         # properly through to the javascript side.
         # XXX TODO: tunnel the exception through JS and back to Python?
         # We could do this by e.g. throwing a special object...
-        jserr = String(space, pyerr.errorstr(space))
-        emjs_set_error(_unwrap_handle(space, jserr))
+        w_jserr = String(space, pyerr.errorstr(space))
+        with _unwrap_handle(space, w_jserr) as h_jserr:
+            emjs_set_error(h_jserr)
         return EMJS_ERROR
     else:
         # Note that the js-side callback stub frees the result handle,
         # so we have to dup it here to avoid breaking the w_res object.
-        h_res = _unwrap_handle(space, w_res)
-        return emjs_dup(h_res)
+        with _unwrap_handle(space, w_res) as h_res:
+            return emjs_dup(h_res)
 
 
 undefined = W_Value(EMJS_UNDEFINED)
@@ -725,12 +839,25 @@ true = W_Value(EMJS_TRUE)
 
 def W_Value_descr__call__(space, w_self, args_w):
     # XXX TODO: maybe we can pass 'this' as a keyword argument?
-    h_this = _unwrap_handle(space, w_self)
+    self = space.interp_w(W_Value, w_self)
     h_args = emjs_make_array(len(args_w))
     _check_error(space, h_args)
     for i in xrange(len(args_w)):
-        emjs_prop_set_int(h_args, i, _unwrap_handle(space, args_w[i]))
-    h_res = emjs_apply(h_this, h_this, h_args)
+        with _unwrap_handle(space, args_w[i]) as h_arg:
+            emjs_prop_set_int(h_args, i, h_arg)
+    h_res = emjs_apply(self.handle, EMJS_UNDEFINED, h_args)
+    return _wrap_handle(space, h_res)
+
+
+def W_Method_descr__call__(space, w_self, args_w):
+    self = space.interp_w(W_Method, w_self)
+    ctx = space.interp_w(W_Value, self.w_ctx)
+    h_args = emjs_make_array(len(args_w))
+    _check_error(space, h_args)
+    for i in xrange(len(args_w)):
+        with _unwrap_handle(space, args_w[i]) as h_arg:
+            emjs_prop_set_int(h_args, i, h_arg)
+    h_res = emjs_apply(self.handle, ctx.handle, h_args)
     return _wrap_handle(space, h_res)
 
 
@@ -749,6 +876,9 @@ W_Value.typedef = TypeDef(
     __le__ = interp2app(W_Value.descr__le__),
     __gt__ = interp2app(W_Value.descr__gt__),
     __ge__ = interp2app(W_Value.descr__ge__),
+    __getitem__ = interp2app(W_Value.descr__getitem__),
+    __setitem__ = interp2app(W_Value.descr__setitem__),
+    __delitem__ = interp2app(W_Value.descr__delitem__),
     __getattr__ = interp2app(W_Value.descr__getattr__),
     __setattr__ = interp2app(W_Value.descr__setattr__),
     __delattr__ = interp2app(W_Value.descr__delattr__),
@@ -767,66 +897,21 @@ W_Value.typedef = TypeDef(
     __pos__ = interp2app(W_Value.descr__pos__),
     __invert__ = interp2app(W_Value.descr__invert__),
     __contains__ = interp2app(W_Value.descr__contains__),
+    # XXX TODO: move __len__ onto appropriate subclasses only
     __len__ = interp2app(W_Value.descr__len__),
-   # TODO: __new__, for subtypes where it makes sense
-   # TODO: __hash__, but only for immutable types
-   # TODO: __getitem__, __setitem__, __delitem__ for object types?
-   # TODO: __dir__ and/or __iter__ for object types
-   # TODO: swapped variants of the arithmetic operators?
+    # TODO: __new__, for subtypes where it makes sense
+    # TODO: __hash__, but only for immutable types
+    # TODO: __dir__ and/or __iter__ for object types
+    # TODO: swapped variants of the arithmetic operators?
 )
 
 
-class W_Globals(W_Root):
-    """A class (with singleton instance) for access global JS scope.
-
-    Calls to getattr/setattr/delattr on this object are translated directly
-    into lookups in the global JS scope.  It is exposed as "js.globals" so
-    that you can do e.g:
-
-        js.globals.alert(js.String("hello world"))
-
-    """
-
-    def descr__repr__(self, space):
-        return space.wrap("<js.globals object>")
-
-    descr__str__ = descr__repr__
-
-    @unwrap_spec(name=str)
-    def descr__getattr__(self, space, name):
-        # XXX TODO: raise AttributeError for 'undefined'?
-        h_res = emjs_get(name)
-        return _wrap_handle(space, h_res)
-
-    @unwrap_spec(name=str)
-    def descr__setattr__(self, space, name, w_value):
-        value = _unwrap_handle(space, w_value)
-        res = emjs_set(name, value)
-        _check_error(space, res)
-
-    @unwrap_spec(name=str)
-    def descr__delattr__(self, space, name):
-        res = emjs_delete(name)
-        _check_error(space, res)
-
-
-globals = W_Globals()
-
-
-W_Globals.typedef = TypeDef(
-    "Globals",
-    __doc__ = "Singleton instance for accessing global JS scope.",
-    __repr__ = interp2app(W_Globals.descr__repr__),
-    __str__ = interp2app(W_Globals.descr__str__),
-    __getattr__ = interp2app(W_Globals.descr__getattr__),
-    __setattr__ = interp2app(W_Globals.descr__setattr__),
-    __delattr__ = interp2app(W_Globals.descr__delattr__),
+W_Method.typedef = TypeDef(
+    "Method",
+    (W_Value.typedef,),
+    __doc__ = "Handle to a JS function with bound context.",
+    __call__ = interp2app(W_Method_descr__call__),
+    # XXX TODO: expose the underlying function as a property?
+    # I think there is a "GetSetProperty" typedef thing that can do this.
 )
 
-# TODO: How will we sensibly implement methods and handling of 'this'?
-# Can we somehow make Function a descriptor that does the bind automatically?
-# Should we provide python-like or js-like behaviour by default?
-#
-# Idea:  val.method returns an instancemethod object that wraps the JS
-#        Function value as its im_func.  So we get python-like behaviour
-#        by default, but can still access the underlying raw function.

@@ -85,46 +85,9 @@ var LibraryEMJS = {
     return _emjs_make_handle(_emjs_deref(ref));
   },
 
-  emjs_get__deps: ['emjs_make_handle'],
-  emjs_get: function(nameptr) {
-    try {
-      // XXX TODO: maybe we just give a way to return the global scope object?
-      var name = Pointer_stringify(nameptr);
-      var names = name.split('.');
-      var obj = this;
-      for (var i = 0; i < names.length; i++) {
-          obj = obj[names[i]];
-      }
-      return _emjs_make_handle(obj);
-    } catch (err) { EMJS.last_error = err; return EMJS.ERROR; }
-  },
-
-  emjs_set__deps: ['emjs_make_handle', 'emjs_deref'],
-  emjs_set: function(nameptr, h) {
-    try {
-      var name = Pointer_stringify(nameptr);
-      var names = name.split('.');
-      var obj = this;
-      for (var i = 0; i < names.length - 1; i++) {
-          obj = obj[names[i]];
-      }
-      obj[names[i]] = _emjs_deref(h);
-      return EMJS.OK;
-    } catch (err) { EMJS.last_error = err; return EMJS.ERROR; }
-  },
-
-  emjs_delete__deps: ['emjs_make_handle'],
-  emjs_delete: function(nameptr) {
-    try {
-      var name = Pointer_stringify(nameptr);
-      var names = name.split('.');
-      var obj = this;
-      for (var i = 0; i < names.length - 1; i++) {
-          obj = obj[names[i]];
-      }
-      delete obj[names[i]];
-      return EMJS.OK;
-    } catch (err) { EMJS.last_error = err; return EMJS.ERROR; }
+  emjs_globals: ['emjs_make_handle'],
+  emjs_globals: function() {
+    return _emjs_make_handle(this);
   },
 
   emjs_prop_get__deps: ['emjs_make_handle', 'emjs_deref'],

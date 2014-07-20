@@ -59,11 +59,8 @@ void emjs_free(emjs_handle);
 // safe and returned it unmodified.
 emjs_handle emjs_dup(emjs_handle);
 
-// Load/store/delete a JS value by name in global scope.
-// Dotted names are accepted, so you can do e.g. "window.foo".
-emjs_handle emjs_get(char* dotted_name);
-emjs_handle emjs_set(char* dotted_name, emjs_handle);
-emjs_handle emjs_delete(char* dotted_name);
+// Get a refernce to the global scope 'this' object.
+emjs_handle emjs_globals(void);
 
 // Load/store/delete/call a JS value as a property on an object.
 // The generic case accepts a handle to specify the the property, and

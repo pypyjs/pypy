@@ -3,6 +3,12 @@ from pypy.interpreter.mixedmodule import MixedModule
 
 
 class Module(MixedModule):
+    """\
+This module provides access to the host javascript environment.  It can be
+used to introspect objects and call functions in the host environment, and
+to create callbacks allowing the host environment to call back into the pypy
+interpreter.
+    """
 
     interpleveldefs = {
         'Error': 'space.fromcache(interp_js.Cache).w_error',
