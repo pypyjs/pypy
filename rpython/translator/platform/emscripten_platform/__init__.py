@@ -84,6 +84,9 @@ class EmscriptenPlatform(BasePosix):
       # This preserves sensible names in the generated JS.
       # Useful for debugging, but turn this off in production.
       #"-g2",
+      # Disable the use of a separate memory-initializer file.
+      # Such file makes it harder to run the compiled code during the build.
+      "--memory-init-file", "0",
       # Necessary for ctypes support.
       #"-s", "DLOPEN_SUPPORT=1",
       #"-s", "INCLUDE_FULL_LIBRARY=1",
@@ -93,6 +96,8 @@ class EmscriptenPlatform(BasePosix):
     extra_environ = {
         # We're still trialling fastcomp, here's a handy way to turn it off.
         #"EMCC_FAST_COMPILER": "0",
+        # Needed when running closure compiler.
+        "JAVA_HEAP_SIZE": "4096m",
     }
  
     def __init__(self, *args, **kwds):

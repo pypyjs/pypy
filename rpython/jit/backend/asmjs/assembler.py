@@ -1233,7 +1233,8 @@ class CompiledBlockASMJS(object):
     def genop_copystrcontent(self, op):
         arraytoken = symbolic.get_array_token(rstr.STR,
                                               self.cpu.translate_support_code)
-        self._genop_copy_array(op, arraytoken)
+        basesize, itemsize, _ = arraytoken
+        self._genop_copy_array(op, basesize, itemsize)
 
     def genop_expr_unicodegetitem(self, op):
         base = self._get_jsval(op.getarg(0))
@@ -1268,17 +1269,18 @@ class CompiledBlockASMJS(object):
     def genop_copyunicodecontent(self, op):
         arraytoken = symbolic.get_array_token(rstr.UNICODE,
                                               self.cpu.translate_support_code)
-        self._genop_copy_array(op, arraytoken)
+        basesize, itemsize, _ = arraytoken
+        self._genop_copy_array(op, basesize, itemsize)
 
-    def _genop_copy_array(self, op, arraytoken):
+    def _genop_copy_array(self, op, array_basesize, array_itemsize):
         srcbase = self._get_jsval(op.getarg(0))
         dstbase = self._get_jsval(op.getarg(1))
         srcoffset = self._get_jsval(op.getarg(2))
         dstoffset = self._get_jsval(op.getarg(3))
         lengthbox = self._get_jsval(op.getarg(4))
         assert srcbase != dstbase
-        basesize = js.ConstInt(arraytoken[0])
-        itemsize = js.ConstInt(arraytoken[1])
+        basesize = js.ConstInt(array_basesize)
+        itemsize = js.ConstInt(array_itemsize)
         # Calculate offset into source array.
         srcaddr = js.Plus(srcbase,
                           js.Plus(basesize, js.IMul(srcoffset, itemsize)))
