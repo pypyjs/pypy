@@ -160,7 +160,8 @@ def emjs_make_str(value):
     raise NotImplementedError
 
 
-@jsexternal([rffi.CCHARP, SIZE_T_TP], EMJS_HANDLE_TP)
+@jsexternal([rffi.CCHARP, SIZE_T_TP], EMJS_HANDLE_TP,
+            _nowrapper=False)
 def emjs_make_strn(value):
     raise NotImplementedError
 
@@ -221,7 +222,7 @@ def emjs_clear_error(h):
 
 
 @jsexternal([rffi.CCHARP], EMJS_HANDLE_TP,
-            random_effects_on_gcobjs=True, _nowraper=False)
+            random_effects_on_gcobjs=True, _nowrapper=False)
 def emjs_eval(value):
     raise NotImplementedError
 
@@ -423,6 +424,6 @@ def emjs_read_str(h, buf):
     raise NotImplementedError
                            
 
-@jsexternal([EMJS_HANDLE_TP, rffi.CCHARP, SIZE_T_TP], lltype.Signed)
+@jsexternal([EMJS_HANDLE_TP, rffi.CCHARP, lltype.Signed], lltype.Signed)
 def emjs_read_strn(h, buf, maxlen):
     raise NotImplementedError
