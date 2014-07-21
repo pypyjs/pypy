@@ -1,385 +1,33 @@
-#
-# Hitlist:
-#
-#   * transparent conversion of primitive types; this is
-#     particularly useful when defining callback functions.
-#   * "Method" objects and nice handling of 'this'.
-#   * split out the emjs_* functions to a separate file, add python stub
-#     implementations for testing purposes.
-#   * make String, Object, Function etc be proper subclasses of Value.
-#   * maybe rename "Value" to "Handle"..?
-#
 
 from __future__ import with_statement
 
-from rpython.rtyper.tool import rffi_platform
 from rpython.rtyper.lltypesystem import lltype, rffi
-from rpython.rtyper.tool import rffi_platform
-from rpython.rlib.unroll import unrolling_iterable
-from rpython.rlib.rarithmetic import intmask, is_emulated_long
-from rpython.rlib.objectmodel import we_are_translated
-from rpython.rlib.rmmap import alloc
-from rpython.rlib.rdynload import dlopen, dlclose, dlsym, dlsym_byordinal
-from rpython.rlib.rdynload import DLOpenError, DLLHANDLE
 from rpython.rlib import rweakref
-from rpython.rlib import jit
-from rpython.rlib.objectmodel import specialize
-from rpython.translator.tool.cbuild import ExternalCompilationInfo
-from rpython.translator.platform import platform
-from rpython.conftest import cdir
-from platform import machine
-import py
-import os
-import sys
-import ctypes.util
 
+import pypy.interpreter.function
 from pypy.interpreter.error import OperationError
 from pypy.interpreter.baseobjspace import W_Root
 from pypy.interpreter.typedef import TypeDef, GetSetProperty
-from pypy.interpreter.function import Function as InterpFunction
-from pypy.interpreter.function import Method as InterpMethod
-from pypy.interpreter.gateway import interp2app, unwrap_spec, WrappedDefault
+from pypy.interpreter.gateway import interp2app, unwrap_spec
 
-
-
-# First, we make the necessary declarations to import the "emjs" API.
-# XXX TODO: move these into a "support" library of some kind, and add
-# a pure-python dummy implementation for testing purposes.
-
-eci = ExternalCompilationInfo(
-    includes = ['emjs.h'],
-)
-
-CONSTANTS = [
-  'EMJS_ERROR', 'EMJS_OK', 'EMJS_UNDEFINED', 'EMJS_NULL', 'EMJS_FALSE',
-  'EMJS_TRUE', 'EMJS_TYPE_ERROR', 'EMJS_TYPE_UNDEFINED', 'EMJS_TYPE_BOOLEAN',
-  'EMJS_TYPE_NUMBER', 'EMJS_TYPE_STRING', 'EMJS_TYPE_OBJECT',
-  'EMJS_TYPE_FUNCTION',
-]
-
-
-class CConfig:
-    _compilation_info_ = eci
-    size_t = rffi_platform.SimpleType("size_t", rffi.ULONG)
-    emjs_handle = rffi_platform.SimpleType("emjs_handle", rffi.LONG)
-    emjs_type = rffi_platform.SimpleType("emjs_type", rffi.LONG)
-
-for constant in CONSTANTS:
-    setattr(CConfig, constant, rffi_platform.ConstantInteger(constant))
-
-class cConfig:
-    pass
-
-for k, v in rffi_platform.configure(CConfig).items():
-    setattr(cConfig, k, v)
-
-for constant in CONSTANTS:
-    locals()[constant] = getattr(cConfig, constant)
-del constant, CONSTANTS
-
-SIZE_T_TP = cConfig.size_t
-EMJS_HANDLE_TP = cConfig.emjs_handle
-EMJS_TYPE_TP = cConfig.emjs_type
-CALLBACK_TP = rffi.CCallback([rffi.VOIDP, EMJS_HANDLE_TP], EMJS_HANDLE_TP)
-
-
-def external(name, args, result, **kwds):
-    return rffi.llexternal(name, args, result, compilation_info=eci, **kwds)
-
-
-emjs_free = external('emjs_free',
-                     [EMJS_HANDLE_TP],
-                     lltype.Void)
-
-emjs_dup = external('emjs_dup',
-                    [EMJS_HANDLE_TP],
-                    EMJS_HANDLE_TP)
-
-emjs_globals = external('emjs_globals',
-                        [],
-                        EMJS_HANDLE_TP)
-
-emjs_prop_get = external('emjs_prop_get',
-                         [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_prop_set = external('emjs_prop_set',
-                         [EMJS_HANDLE_TP, EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_prop_delete = external('emjs_prop_delete',
-                            [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                            EMJS_HANDLE_TP)
-
-emjs_prop_apply = external('emjs_prop_apply',
-                           [EMJS_HANDLE_TP, EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                           EMJS_HANDLE_TP)
-
-emjs_prop_get_int = external('emjs_prop_get_int',
-                             [EMJS_HANDLE_TP, lltype.Signed],
-                             EMJS_HANDLE_TP)
-
-emjs_prop_set_int = external('emjs_prop_set_int',
-                             [EMJS_HANDLE_TP, lltype.Signed, EMJS_HANDLE_TP],
-                             EMJS_HANDLE_TP)
-
-emjs_prop_delete_int = external('emjs_prop_delete_int',
-                                [EMJS_HANDLE_TP, lltype.Signed],
-                                EMJS_HANDLE_TP)
-
-emjs_prop_apply_int = external('emjs_prop_apply_int',
-                               [EMJS_HANDLE_TP, lltype.Signed, EMJS_HANDLE_TP],
-                               EMJS_HANDLE_TP)
-
-emjs_prop_get_str = external('emjs_prop_get_str',
-                             [EMJS_HANDLE_TP, rffi.CCHARP],
-                             EMJS_HANDLE_TP)
-
-emjs_prop_set_str = external('emjs_prop_set_str',
-                             [EMJS_HANDLE_TP, rffi.CCHARP, EMJS_HANDLE_TP],
-                             EMJS_HANDLE_TP)
-
-emjs_prop_delete_str = external('emjs_prop_delete_str',
-                                [EMJS_HANDLE_TP, rffi.CCHARP],
-                                EMJS_HANDLE_TP)
-
-emjs_prop_apply_str = external('emjs_prop_apply_str',
-                               [EMJS_HANDLE_TP, rffi.CCHARP, EMJS_HANDLE_TP],
-                               EMJS_HANDLE_TP)
-
-emjs_make_str = external('emjs_make_str',
-                         [rffi.CCHARP],
-                         EMJS_HANDLE_TP)
-
-emjs_make_strn = external('emjs_make_strn',
-                          [rffi.CCHARP, SIZE_T_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_make_int32 = external('emjs_make_int32',
-                           [lltype.Signed],
-                           EMJS_HANDLE_TP)
-
-emjs_make_double = external('emjs_make_double',
-                           [rffi.DOUBLE],
-                           EMJS_HANDLE_TP)
-
-emjs_make_bool = external('emjs_make_bool',
-                           [lltype.Signed],
-                           EMJS_HANDLE_TP)
-
-emjs_make_undefined = external('emjs_make_undefined',
-                               [],
-                               EMJS_HANDLE_TP)
-
-emjs_make_null = external('emjs_make_null',
-                          [],
-                          EMJS_HANDLE_TP)
-
-emjs_make_object = external('emjs_make_object',
-                            [],
-                            EMJS_HANDLE_TP)
-
-emjs_make_array = external('emjs_make_array',
-                           [lltype.Signed],
-                           EMJS_HANDLE_TP)
-
-emjs_make_callback = external('emjs_make_callback',
-                              [CALLBACK_TP, rffi.VOIDP],
-                              EMJS_HANDLE_TP)
-
-emjs_get_error = external('emjs_get_error',
-                          [],
-                          EMJS_HANDLE_TP)
-
-emjs_set_error = external('emjs_set_error',
-                          [EMJS_HANDLE_TP],
-                          lltype.Void)
-
-emjs_clear_error = external('emjs_clear_error',
-                            [],
-                            lltype.Void)
-
-emjs_eval = external('emjs_eval',
-                     [rffi.CCHARP],
-                     EMJS_HANDLE_TP)
-
-emjs_apply = external('emjs_apply',
-                      [EMJS_HANDLE_TP, EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                      EMJS_HANDLE_TP)
-
-emjs_new = external('emjs_new',
-                    [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                    EMJS_HANDLE_TP)
-
-emjs_typeof = external('emjs_typeof',
-                       [EMJS_HANDLE_TP],
-                       EMJS_TYPE_TP)
-
-emjs_iter_all = external('emjs_iter_all',
-                         [EMJS_HANDLE_TP, CALLBACK_TP, rffi.VOIDP],
-                         EMJS_HANDLE_TP)
-
-emjs_iter_own = external('emjs_iter_own',
-                         [EMJS_HANDLE_TP, CALLBACK_TP, rffi.VOIDP],
-                         EMJS_HANDLE_TP)
-
-emjs_check = external('emjs_check',
-                      [EMJS_HANDLE_TP],
-                      lltype.Signed)
-
-emjs_op_eq = external('emjs_op_eq',
-                      [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                      lltype.Signed)
-
-emjs_op_neq = external('emjs_op_neq',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       lltype.Signed)
-
-emjs_op_equiv = external('emjs_op_equiv',
-                         [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                         lltype.Signed)
-
-emjs_op_nequiv = external('emjs_op_nequiv',
-                          [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                          lltype.Signed)
-
-emjs_op_gt = external('emjs_op_gt',
-                      [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                      lltype.Signed)
-
-emjs_op_lt = external('emjs_op_lt',
-                      [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                      lltype.Signed)
-
-emjs_op_gteq = external('emjs_op_gteq',
-                        [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                        lltype.Signed)
-
-emjs_op_lteq = external('emjs_op_lteq',
-                        [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                        lltype.Signed)
-
-emjs_op_add = external('emjs_op_add',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       EMJS_HANDLE_TP)
-
-emjs_op_sub = external('emjs_op_sub',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       EMJS_HANDLE_TP)
-
-emjs_op_mul = external('emjs_op_mul',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       EMJS_HANDLE_TP)
-
-emjs_op_div = external('emjs_op_div',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       EMJS_HANDLE_TP)
-
-emjs_op_mod = external('emjs_op_mod',
-                       [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                       EMJS_HANDLE_TP)
-
-emjs_op_uplus = external('emjs_op_uplus',
-                         [EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_op_uminus = external('emjs_op_uminus',
-                          [EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_op_bw_and = external('emjs_op_bw_and',
-                          [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_op_bw_or = external('emjs_op_bw_or',
-                         [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_op_bw_xor = external('emjs_op_bw_xor',
-                          [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_op_bw_lshift = external('emjs_op_bw_lshift',
-                             [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                             EMJS_HANDLE_TP)
-
-emjs_op_bw_rshift = external('emjs_op_bw_rshift',
-                             [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                             EMJS_HANDLE_TP)
-
-emjs_op_bw_urshift = external('emjs_op_bw_urshift',
-                              [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                              EMJS_HANDLE_TP)
-
-emjs_op_bw_neg = external('emjs_op_bw_neg',
-                          [EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_op_in = external('emjs_op_in',
-                      [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                      lltype.Signed)
-
-emjs_op_instanceof = external('emjs_op_instanceof',
-                              [EMJS_HANDLE_TP, EMJS_HANDLE_TP],
-                              lltype.Signed)
-
-emjs_length = external('emjs_length',
-                       [EMJS_HANDLE_TP],
-                       lltype.Signed)
-
-emjs_to_int32 = external('emjs_to_int32',
-                         [EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_to_uint32 = external('emjs_to_uint32',
-                         [EMJS_HANDLE_TP],
-                         EMJS_HANDLE_TP)
-
-emjs_to_double = external('emjs_to_double',
-                          [EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_to_string = external('emjs_to_string',
-                          [EMJS_HANDLE_TP],
-                          EMJS_HANDLE_TP)
-
-emjs_read_int32 = external('emjs_read_int32',
-                           [EMJS_HANDLE_TP],
-                           lltype.Signed)
-
-emjs_read_uint32 = external('emjs_read_uint32',
-                            [EMJS_HANDLE_TP],
-                            lltype.Unsigned)
-
-emjs_read_double = external('emjs_read_double',
-                            [EMJS_HANDLE_TP],
-                            rffi.DOUBLE)
-
-emjs_read_str = external('emjs_read_str',
-                         [EMJS_HANDLE_TP, rffi.CCHARP],
-                         lltype.Signed)
-
-emjs_read_strn = external('emjs_read_strn',
-                         [EMJS_HANDLE_TP, rffi.CCHARP, SIZE_T_TP],
-                         lltype.Signed)
-
-
-# Now, we build a higher-level API on top of the emjs C API.
-# We use objects with finalizers to automatically manage the freeeing of
-# handles, and a bunch of magic methods to map the appropriate python-level
-# operators into corresponding js-level operators.
+from pypy.module.js import support
 
 
 class W_Value(W_Root):
+    """Base class for js value handles.
+
+    This is the base class for wrappe javascript value handles.  It cannot
+    be instantiated directly from application code, but provides much of
+    the base functionality that's common to all value types.
+    """
 
     _immutable_fields_ = ['handle']
 
-    def __init__(self, handle, callback=None):
+    def __init__(self, handle):
         self.handle = handle
-        self.callback = callback
 
     def __del__(self):
-        emjs_free(self.handle)
+        support.emjs_free(self.handle)
 
     def descr__repr__(self, space):
         return space.wrap("<js.Value handle=%d>" % (self.handle,))
@@ -387,54 +35,57 @@ class W_Value(W_Root):
     # Expose a whole host of operators via app-level magic methods.
 
     def descr__float__(self, space):
-        res = emjs_read_double(self.handle)
+        res = support.emjs_read_double(self.handle)
         return space.wrap(res)
 
     def descr__int__(self, space):
-        res = emjs_read_int32(self.handle)
+        res = support.emjs_read_int32(self.handle)
         return space.wrap(res)
 
     def descr__str__(self, space):
-        h_str = emjs_to_string(self.handle)
+        h_str = support.emjs_to_string(self.handle)
         _check_error(space, h_str)
-        bufsize = emjs_length(h_str)
+        bufsize = support.emjs_length(h_str)
         _check_error(space, bufsize)
         with rffi.scoped_alloc_buffer(bufsize) as buf:
-            n = emjs_read_strn(h_str, buf.raw, buf.size)
+            n = support.emjs_read_strn(h_str, buf.raw, buf.size)
             return space.wrap(buf.str(n))
+
+    # We expose === as default equality operator, for that I hope
+    # are fairly obvious reasons....
 
     def descr__eq__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_equiv(self.handle, h_other)
+            res = support.emjs_op_equiv(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__ne__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_nequiv(self.handle, h_other)
+            res = support.emjs_op_nequiv(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__lt__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_lt(self.handle, h_other)
+            res = support.emjs_op_lt(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__le__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_lteq(self.handle, h_other)
+            res = support.emjs_op_lteq(self.handle, h_other)
         return space.newbool(bool(res))
         
     def descr__gt__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_gt(self.handle, h_other)
+            res = support.emjs_op_gt(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__ge__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            res = emjs_op_gteq(self.handle, h_other)
+            res = support.emjs_op_gteq(self.handle, h_other)
         return space.newbool(bool(res))
 
     def descr__bool__(self, space):
-        res = emjs_check(self.handle)
+        res = support.emjs_check(self.handle)
         return space.newbool(bool(res))
 
     # The semntics of __getitem__ and __getattr__ are equivalent for
@@ -448,283 +99,340 @@ class W_Value(W_Root):
 
     @unwrap_spec(name=str)
     def descr__getitem__(self, space, name):
-        h_res = emjs_prop_get_str(self.handle, name)
+        h_res = support.emjs_prop_get_str(self.handle, name)
         return _wrap_handle(space, h_res)
 
     @unwrap_spec(name=str)
     def descr__setitem__(self, space, name, w_value):
         with _unwrap_handle(space, w_value) as h_value:
-            res = emjs_prop_set_str(self.handle, name, h_value)
+            res = support.emjs_prop_set_str(self.handle, name, h_value)
         _check_error(space, res)
 
     @unwrap_spec(name=str)
     def descr__delitem__(self, space, name):
-        res = emjs_prop_delete_str(self.handle, name)
+        res = support.emjs_prop_delete_str(self.handle, name)
         _check_error(space, res)
 
     @unwrap_spec(name=str)
     def descr__getattr__(self, space, name):
-        h_res = emjs_prop_get_str(self.handle, name)
-        if h_res == EMJS_UNDEFINED:
+        h_res = support.emjs_prop_get_str(self.handle, name)
+        if h_res == support.EMJS_UNDEFINED:
             raise OperationError(space.w_AttributeError, space.wrap(name))
-        _check_error(space, h_res)
-        if emjs_typeof(h_res) == EMJS_TYPE_FUNCTION:
-            return space.wrap(W_Method(h_res, self))
+        w_res = _wrap_handle(space, h_res)
+        # Turn functions into methods during attribute lookup.
+        # XXX TODO: find a non-exception-driven check for this.
+        try:
+            func = space.interp_w(W_Function, w_res)
+        except OperationError, e:
+            if not e.match(space, space.w_TypeError):
+                raise
         else:
-            return space.wrap(W_Value(h_res))
+            w_res = bind(space, w_res, space.wrap(self))
+        return w_res
 
     @unwrap_spec(name=str)
     def descr__setattr__(self, space, name, w_value):
         with _unwrap_handle(space, w_value) as h_value:
-            res = emjs_prop_set_str(self.handle, name, h_value)
+            res = support.emjs_prop_set_str(self.handle, name, h_value)
         _check_error(space, res)
 
     @unwrap_spec(name=str)
     def descr__delattr__(self, space, name):
-        res = emjs_prop_delete_str(self.handle, name)
+        res = support.emjs_prop_delete_str(self.handle, name)
         _check_error(space, res)
 
     def descr__add__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_add(self.handle, h_other)
+            h_res = support.emjs_op_add(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__sub__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_sub(self.handle, h_other)
+            h_res = support.emjs_op_sub(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__mul__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_mul(self.handle, h_other)
+            h_res = support.emjs_op_mul(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__div__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_div(self.handle, h_other)
+            h_res = support.emjs_op_div(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__truediv__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_div(self.handle, h_other)
+            h_res = support.emjs_op_div(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__mod__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_mod(self.handle, h_other)
+            h_res = support.emjs_op_mod(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__lshift__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_bw_lshift(self.handle, h_other)
+            h_res = support.emjs_op_bw_lshift(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__rshift__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_bw_rshift(self.handle, h_other)
+            h_res = support.emjs_op_bw_rshift(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__and__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_bw_and(self.handle, h_other)
+            h_res = support.emjs_op_bw_and(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__or__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_bw_or(self.handle, h_other)
+            h_res = support.emjs_op_bw_or(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__xor__(self, space, w_other):
         with _unwrap_handle(space, w_other) as h_other:
-            h_res = emjs_op_bw_xor(self.handle, h_other)
+            h_res = support.emjs_op_bw_xor(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
     def descr__neg__(self, space):
-        h_res = emjs_op_uminus(self.handle)
+        h_res = support.emjs_op_uminus(self.handle)
         return _wrap_handle(space, h_res)
 
     def descr__pos__(self, space):
-        h_res = emjs_op_uplus(self.handle)
+        h_res = support.emjs_op_uplus(self.handle)
         return _wrap_handle(space, h_res)
 
     def descr__invert__(self, space):
-        h_res = emjs_op_bw_neg(self.handle)
+        h_res = support.emjs_op_bw_neg(self.handle)
         return _wrap_handle(space, h_res)
 
     def descr__contains__(self, space, w_item):
         with _unwrap_handle(space, w_item) as h_item:
-            res = emjs_op_in(h_item, self.handle)
+            res = support.emjs_op_in(h_item, self.handle)
         _check_error(space, res)
         return space.newbool(bool(res))
 
+
+W_Value.typedef = TypeDef(
+    "Value",
+    __doc__ = "Handle to an abstract JS value.",
+    __repr__ = interp2app(W_Value.descr__repr__),
+    __str__ = interp2app(W_Value.descr__str__),
+    __bool__ = interp2app(W_Value.descr__bool__),
+    __float__ = interp2app(W_Value.descr__float__),
+    __int__ = interp2app(W_Value.descr__int__),
+    __eq__ = interp2app(W_Value.descr__eq__),
+    __ne__ = interp2app(W_Value.descr__ne__),
+    __lt__ = interp2app(W_Value.descr__lt__),
+    __le__ = interp2app(W_Value.descr__le__),
+    __gt__ = interp2app(W_Value.descr__gt__),
+    __ge__ = interp2app(W_Value.descr__ge__),
+    __getitem__ = interp2app(W_Value.descr__getitem__),
+    __setitem__ = interp2app(W_Value.descr__setitem__),
+    __delitem__ = interp2app(W_Value.descr__delitem__),
+    __getattr__ = interp2app(W_Value.descr__getattr__),
+    __setattr__ = interp2app(W_Value.descr__setattr__),
+    __delattr__ = interp2app(W_Value.descr__delattr__),
+    __add__ = interp2app(W_Value.descr__add__),
+    __sub__ = interp2app(W_Value.descr__sub__),
+    __mul__ = interp2app(W_Value.descr__mul__),
+    __div__ = interp2app(W_Value.descr__div__),
+    __truediv__ = interp2app(W_Value.descr__truediv__),
+    __mod__ = interp2app(W_Value.descr__mod__),
+    __lshift__ = interp2app(W_Value.descr__lshift__),
+    __rshift__ = interp2app(W_Value.descr__rshift__),
+    __and__ = interp2app(W_Value.descr__and__),
+    __or__ = interp2app(W_Value.descr__or__),
+    __xor__ = interp2app(W_Value.descr__xor__),
+    __neg__ = interp2app(W_Value.descr__neg__),
+    __pos__ = interp2app(W_Value.descr__pos__),
+    __invert__ = interp2app(W_Value.descr__invert__),
+    __contains__ = interp2app(W_Value.descr__contains__),
+    # TODO: __hash__, but only for immutable types
+    # TODO: __dir__ and/or __iter__ for object types
+)
+
+
+class W_Undefined(W_Value):
+    """W_Value subclass for the singleton 'undefined'.
+
+    This class provides no additional methods, and exists mainly to allow
+    python code to typecheck for undefined.
+    """
+
+    def descr__repr__(self, space):
+        return space.wrap("<js.Undefined>")
+
+
+def W_Undefined_descr__new__(space, w_subtype):
+    # The constructor always returns the singleton instance.
+    return space.wrap(undefined)
+
+
+W_Undefined.typedef = TypeDef(
+    "Undefined",
+    (W_Value.typedef,),
+    __doc__ = "Handle to the JS singleton 'undefined'.",
+    __new__ = interp2app(W_Undefined_descr__new__),
+    __repr__ = interp2app(W_Undefined.descr__repr__),
+)
+
+
+class W_Boolean(W_Value):
+    """W_Value subclass for singleton booleans 'true' and 'false'.
+
+    This class provides no additional methods, and exists mainly to allow
+    python code to typecheck for booleans.
+    """
+
+    def descr__repr__(self, space):
+        if self.handle == support.EMJS_TRUE:
+            return space.wrap("<js.Boolean true>")
+        else:
+            return space.wrap("<js.Boolean false>")
+
+
+def W_Boolean_descr__new__(space, w_subtype, w_value):
+    if space.is_true(w_value):
+        return true
+    else:
+        return false
+
+
+W_Boolean.typedef = TypeDef(
+    "Boolean",
+    (W_Value.typedef,),
+    __doc__ = "Handle to a JS boolean value.",
+    __new__ = interp2app(W_Boolean_descr__new__),
+    __repr__ = interp2app(W_Boolean.descr__repr__),
+)
+
+
+class W_Number(W_Value):
+    """W_Value subclass for javascript numeric values.
+
+    This class provides no additional methods, and exists mainly to allow
+    python code to typecheck for numbers.
+    """
+
+    def descr__repr__(self, space):
+        value = support.emjs_read_double(self.handle)
+        return space.wrap("<js.Number %f>" % (value,))
+
+
+def W_Number_descr__new__(space, w_subtype, w_value):
+    w_self = space.allocate_instance(W_Number, w_subtype)
+    value = space.float_w(w_value)
+    h_value = support.emjs_make_double(value)
+    W_Number.__init__(space.interp_w(W_Number, w_self), h_value)
+    return w_self
+
+
+W_Number.typedef = TypeDef(
+    "Number",
+    (W_Value.typedef,),
+    __doc__ = "Handle to a JS numeric value.",
+    __new__ = interp2app(W_Number_descr__new__),
+    __repr__ = interp2app(W_Number.descr__repr__),
+)
+
+
+class W_String(W_Value):
+    """W_Value subclass for javascript string values.
+
+    This class provides an additional method __len__ for easy access to
+    the length of the string.  It's also useful for typechecking.
+    """
+
+    def descr__repr__(self, space):
+        bufsize = support.emjs_length(self.handle)
+        _check_error(space, bufsize)
+        truncated = False
+        if bufsize > 17:
+            bufsize = 17
+            truncated = True
+        with rffi.scoped_alloc_buffer(bufsize) as buf:
+            n = support.emjs_read_strn(self.handle, buf.raw, buf.size)
+            strval = buf.str(n)
+        if truncated:
+            strval = strval + "..."
+        return space.wrap("<js.String '%s'>" % (strval,))
+
     def descr__len__(self, space):
-        res = emjs_length(self.handle)
+        res = support.emjs_length(self.handle)
         _check_error(space, res)
         return space.wrap(res)
 
 
-class Cache:
-    def __init__(self, space):
-        self.w_error = space.new_exception_class("js.Error")
+def W_String_descr__new__(space, w_subtype, w_value):
+    w_self = space.allocate_instance(W_String, w_subtype)
+    value = space.str_w(w_value)
+    h_value = support.emjs_make_strn(value, len(value))
+    W_String.__init__(space.interp_w(W_String, w_self), h_value)
+    return w_self
 
 
-def _raise_error(space):
-    err_h = emjs_get_error()
-    if err_h != EMJS_UNDEFINED:
-        emjs_clear_error()
-        w_error = space.fromcache(Cache).w_error
-        raise OperationError(w_error, _wrap_handle(space, err_h))
+W_String.typedef = TypeDef(
+    "String",
+    (W_Value.typedef,),
+    __doc__ = "Handle to a JS string value.",
+    __new__ = interp2app(W_String_descr__new__),
+    __repr__ = interp2app(W_String.descr__repr__),
+    __len__ = interp2app(W_String.descr__len__),
+)
 
 
-def _wrap_handle(space, handle, callback=None):
-    if handle == EMJS_ERROR:
-        _raise_error(space)
-    return space.wrap(W_Value(handle, callback))
+class W_Object(W_Value):
+    """W_Value subclass for javascript object values.
 
-
-class _unwrap_handle(object):
-    """Context-manager for unwrapping an app-level object to a js-level handle.
-
-    This class can manage both existing W_Value instances, and the transient
-    conversion of immutable app-level datatypes such as ints and strings.  It
-    needs to be a context-manager to allow proper lifetime management of
-    such transient handles.
+    This class provides no additional methods, and exists mainly to allow
+    python code to typecheck for numbers.
     """
 
-    def __init__(self, space, w_value):
-        self.space = space
-        self.w_value = w_value
-        self.h_transient = EMJS_ERROR
-        self.cb_transient = None
-
-    def __enter__(self):
-        space = self.space
-        w_value = self.w_value
-        # Optimistically assume that it's a proper W_Value instance.
-        try:
-            return space.interp_w(W_Value, w_value).handle
-        except OperationError, e:
-            if not e.match(space, space.w_TypeError):
-                raise
-            # Try to convert it to a transient W_Value instance.
-            h_value = self._convert_transiently()
-            if h_value == EMJS_ERROR:
-                raise
-            self.h_transient = h_value
-            return h_value
-
-    def __exit__(self, exc_typ, exc_val, exc_tb):
-        if self.h_transient != EMJS_ERROR:
-            emjs_free(self.h_transient)
-
-    def _convert_transiently(self):
-        space = self.space
-        w_value = self.w_value
-        if space.isinstance_w(w_value, space.w_int):
-            return emjs_make_int32(space.int_w(w_value))
-        if space.isinstance_w(w_value, space.w_long):
-            return emjs_make_int32(space.int_w(w_value))
-        if space.isinstance_w(w_value, space.w_float):
-            return emjs_make_double(space.float_w(w_value))
-        if space.isinstance_w(w_value, space.w_str):
-            value = space.str_w(w_value)
-            return emjs_make_strn(value, len(value))
-        # XXX TODO: auto-convert functions to callbacks.
-        #if space.isinstance_w(w_value, InterpFunction)):
-        #    h_cb, cb = _make_callback(space, w_value, ())
-        #    self.cb_transient = cb 
-        #    return h_cb
-        #if space.isinstance_w(w_value, space.wrap(InterpMethod)):
-        #    h_cb, cb = _make_callback(space, w_value, ())
-        #    self.cb_transient = cb 
-        #    return h_cb
-        return EMJS_ERROR
+    def descr__repr__(self, space):
+        return space.wrap("<js.Object handle=%d>" % (self.handle,))
 
 
-def _check_error(space, result):
-    if result == EMJS_ERROR:
-        _raise_error(space)
-
-
-def globals(space):
-    """Get a reference to the global scope 'this' object."""
-    h = emjs_globals()
-    return _wrap_handle(space, h)
-
-
-@unwrap_spec(data=str)
-def eval(space, data):
-    """Evaluate javascript code at global scope."""
-    h = emjs_eval(data)
-    return _wrap_handle(space, h)
-
-
-def new(space, w_fn, args_w):
-    with _unwrap_handle(space, w_fn) as h_fn:
-        h_args = emjs_make_array(len(args_w))
-        _check_error(space, h_args)
-        for i in xrange(len(args_w)):
-            with _unwrap_handle(space, args_w[i]) as h_arg:
-                res = emjs_prop_set_int(h_args, i, h_arg)
-            _check_error(space, res)
-        h_res = emjs_new(h_fn, h_args)
-    return _wrap_handle(space, h_res)
-
-
-def instanceof(space, w_lhs, w_rhs):
-    with _unwrap_handle(space, w_lhs) as h_lhs:
-        with  _unwrap_handle(space, w_rhs) as h_rhs:
-            res = emjs_op_instanceof(h_lhs, h_rhs)
-    _check_error(space, res)
-    return space.newbool(bool(res))
-
-
-def urshift(space, w_lhs, w_rhs):
-    with _unwrap_handle(space, w_lhs) as h_lhs:
-        with  _unwrap_handle(space, w_rhs) as h_rhs:
-            h_res = emjs_op_bw_urshift(h_lhs, h_rhs)
-    return _wrap_handle(space, h_res)
-
-
-def uint32(space, w_value):
-    with _unwrap_handle(space, w_value) as h_value:
-        res = emjs_read_uint32(h_value)
-    return space.wrap(res)
-
-
-def Undefined(space):
-    return _wrap_handle(space, EMJS_UNDEFINED)
-
-
-def Boolean(space, w_value):
-    if space.is_true(w_value):
-        return _wrap_handle(space, EMJS_TRUE)
-    else:
-        return _wrap_handle(space, EMJS_FALSE)
-
-
-def Number(space, w_value):
-    value = space.float_w(w_value)
-    h = emjs_make_double(value)
-    return _wrap_handle(space, h)
-
-
-@unwrap_spec(value=str)
-def String(space, value):
-    h = emjs_make_strn(value, len(value))
-    return _wrap_handle(space, h)
-
-
-def Object(space):
+def W_Object_descr__new__(space, w_subtype):
+    w_self = space.allocate_instance(W_Object, w_subtype)
     # XXX TODO: kwargs for initial properties?
-    h = emjs_make_object()
-    return _wrap_handle(space, h)
+    h_value = support.emjs_make_object()
+    W_Object.__init__(space.interp_w(W_Object, w_self), h_value)
+    return w_self
 
 
-@unwrap_spec(size=int)
-def Array(space, w_items=None, size=0):
-    h_res = emjs_make_array(size)
-    _check_error(space, h_res)
+W_Object.typedef = TypeDef(
+    "Object",
+    (W_Value.typedef,),
+    __doc__ = "Handle to a JS object value.",
+    __new__ = interp2app(W_Object_descr__new__),
+    __repr__ = interp2app(W_Object.descr__repr__),
+)
+
+
+class W_Array(W_Object):
+    """W_Object subclass for javascript array values.
+
+    This class provides an additional method __len__ for easy access to
+    the length of the array.  It's also useful for typechecking.
+    """
+
+    def descr__repr__(self, space):
+        return space.wrap("<js.Array handle=%d>" % (self.handle,))
+
+    def descr__len__(self, space):
+        res = support.emjs_length(self.handle)
+        _check_error(space, res)
+        return space.wrap(res)
+
+
+def W_Array_descr__new__(space, w_subtype, w_items, w_size):
+    # XXX TODO: default arguments, somehow...
+    size = space.int_w(w_size)
+    h_self = support.emjs_make_array(size)
+    _check_error(space, h_self)
     if space.is_true(w_items):
         w_iterator = space.iter(w_items)
         idx = 0
@@ -738,36 +446,353 @@ def Array(space, w_items=None, size=0):
                 break
             else:
                 with _unwrap_handle(space, w_item) as h_item:
-                    res = emjs_prop_set_int(h_res, idx, h_item)
+                    res = support.emjs_prop_set_int(h_self, idx, h_item)
+                    _check_error(space, res)
                 idx += 1
+    # XXX TODO: we should free the array if the above raises an error.
+    w_self = space.allocate_instance(W_Array, w_subtype)
+    W_Array.__init__(space.interp_w(W_Array, w_self), h_self)
+    return w_self
+
+
+W_Array.typedef = TypeDef(
+    "Array",
+    (W_Object.typedef,),
+    __doc__ = "Handle to a JS array value.",
+    __new__ = interp2app(W_Array_descr__new__),
+    __repr__ = interp2app(W_Array.descr__repr__),
+    __len__ = interp2app(W_Array.descr__len__),
+)
+
+
+class W_Function(W_Object):
+    """W_Object subclass for javascript function values.
+
+    This class provides an additional method __call__ for invoking the
+    function.
+
+    It can also be instantiated from python code to convert a python function
+    into a javascript callback.  For callbacks that need to access the invoking
+    'this' context, see the Method subclass.
+
+    Function objects are always bound to a particular value of 'this',
+    which is undefined by default but is set implicity when they are
+    retreived as attributes on another Value instance.  To bind to a
+    specific value for 'this', use the js.bind() function.
+    """
+
+    _immutable_fields_ = ['handle', 'context', 'callback']
+
+    def __init__(self, handle, w_context=None, callback=None):
+        self.w_context = w_context
+        self.callback = callback
+        W_Object.__init__(self, handle)
+
+    def descr__repr__(self, space):
+        return space.wrap("<js.Function handle=%d>" % (self.handle,))
+
+    def descr__call__(self, space, args_w):
+        h_args = support.emjs_make_array(len(args_w))
+        _check_error(space, h_args)
+        for i in xrange(len(args_w)):
+            with _unwrap_handle(space, args_w[i]) as h_arg:
+                support.emjs_prop_set_int(h_args, i, h_arg)
+        w_ctx = self.w_context
+        if w_ctx is None:
+            w_ctx = undefined
+        with _unwrap_handle(space, w_ctx) as h_ctx:
+            h_res = support.emjs_apply(self.handle, h_ctx, h_args)
+        return _wrap_handle(space, h_res)
+
+
+def W_Function_descr__new__(space, w_subtype, w_callback, __args__):
+    h_self, cb = _make_callback(space, w_callback, False, __args__)
+    # XXX TODO: we should free the callback if the below raises an error.
+    w_self = space.allocate_instance(W_Function, w_subtype)
+    W_Function.__init__(space.interp_w(W_Function, w_self), h_self, None, cb)
+    return w_self
+
+
+W_Function.typedef = TypeDef(
+    "Function",
+    (W_Object.typedef,),
+    __doc__ = "Handle to a JS function value.",
+    __new__ = interp2app(W_Function_descr__new__),
+    __repr__ = interp2app(W_Function.descr__repr__),
+    __call__ = interp2app(W_Function.descr__call__),
+)
+
+
+class W_Method(W_Function):
+    """W_Function subclass for python method callbacks.
+
+    When instantiated from python code, this subclass will arrange for the
+    python callback to be invoked with 'this' as its first argument, mirroring
+    the way the instance is passed to standard python methods.
+    """
+    pass
+
+
+def W_Method_descr__new__(space, w_subtype, w_callback, __args__):
+    h_self, cb = _make_callback(space, w_callback, True, __args__)
+    # XXX TODO: we should free the callback if the below raises an error.
+    w_self = space.allocate_instance(W_Method, w_subtype)
+    W_Method.__init__(space.interp_w(W_Method, w_self), h_self, None, cb)
+    return w_self
+
+
+W_Method.typedef = TypeDef(
+    "Method",
+    (W_Function.typedef,),
+    __doc__ = "Handle to a JS function that invokes a python method.",
+    __new__ = interp2app(W_Method_descr__new__),
+)
+
+
+class State:
+    """State-holding class for additional app-level definitions.
+
+    This class holds the mutable global state for the module, some of which
+    can only be properly initialized at runtime.
+    """
+
+    def __init__(self, space):
+        # Create a new Exception class for js-level errors.
+        self.w_jserror = space.new_exception_class("js.Error")
+        # Stubs for handles to some commonly-used js values.
+        self.h_globals = 0
+        self.h_array = 0
+        self.h_pyerror = 0
+
+    def startup(self, space):
+        # Hold a permanent handle to the globals object.
+        self.h_globals = support.emjs_globals()
+        _check_error(space, self.h_globals)
+        # Hold a permanent handle to the Array type constructor.
+        self.h_array = support.emjs_prop_get_str(self.h_globals, "Array")
+        _check_error(space, self.h_array)
+        # Create a custom Error type for throwing errors from python callbacks.
+        self.h_pyerror = support.emjs_eval("""
+          (function() {
+            function PyError(message) {
+              this.name = PyError;
+              this.message = message || 'Python Error';
+            }
+            PyError.prototype = new Error();
+            PyError.prototype.constructor = PyError;
+            return PyError;
+          })()
+        """)
+        _check_error(space, self.h_pyerror)
+
+
+def getstate(space):
+    """Get the (possibly cached) module state object."""
+    return space.fromcache(State)
+    
+
+def _raise_error(space):
+    """Helper function to raise an error if the js error flag is set."""
+    h_err = support.emjs_get_error()
+    if h_err != support.EMJS_UNDEFINED:
+        support.emjs_clear_error()
+        # if emjs_op_instanceof(err, h_pyerror):
+        #    try:
+        #        unpickle the error and raise it
+        #    except:
+        #        raise a RuntimeError with debugging info
+        # this is how we pickle:
+        #w_builtins = space.getbuiltinmodule('__builtin__')
+        #w_picklemodule = space.call_method(
+        #    w_builtins, '__import__', space.wrap("pickle"))
+        #w_unpickled = space.call_method(
+        #    w_picklemodule, "loads", w_received)
+        w_jserror = getstate(space).w_jserror
+        raise OperationError(w_jserror, _wrap_handle(space, h_err))
+
+
+def _wrap_handle(space, handle):
+    """Helper function to wrap a handle into an appropriate app-level object.
+
+    This function does some basic type dispatching to return a wrapped instance
+    of the appropriate W_Value subclass for the given handle.
+    """
+    if handle == support.EMJS_ERROR:
+        _raise_error(space)
+    if handle == support.EMJS_UNDEFINED:
+        return space.wrap(undefined)
+    if handle == support.EMJS_NULL:
+        return space.wrap(null)
+    if handle == support.EMJS_FALSE:
+        return space.wrap(false)
+    if handle == support.EMJS_TRUE:
+        return space.wrap(true)
+    typ = support.emjs_typeof(handle)
+    if typ == support.EMJS_TYPE_ERROR:
+        _raise_error(space)
+    if typ == support.EMJS_TYPE_NUMBER:
+        return space.wrap(W_Number(handle))
+    if typ == support.EMJS_TYPE_STRING:
+        return space.wrap(W_String(handle))
+    if typ == support.EMJS_TYPE_FUNCTION:
+        return space.wrap(W_Function(handle))
+    assert typ == support.EMJS_TYPE_OBJECT
+    h_array = getstate(space).h_array
+    if support.emjs_op_instanceof(handle, h_array):
+        return space.wrap(W_Array(handle))
+    return space.wrap(W_Object(handle))
+
+
+class _unwrap_handle(object):
+    """Context-manager for unwrapping an app-level object to a js-level handle.
+
+    This class can manage both existing W_Value instances, and do transient
+    conversion of immutable app-level datatypes such as ints and strings.  It
+    needs to be a context-manager to allow proper lifetime management of
+    such transient handles.
+    """
+
+    def __init__(self, space, w_value):
+        self.space = space
+        self.w_value = w_value
+        self.h_transient = support.EMJS_ERROR
+        self.cb_transient = None
+
+    def __enter__(self):
+        space = self.space
+        w_value = self.w_value
+        try:
+            # Optimistically assume that it's a proper W_Value instance.
+            return space.interp_w(W_Value, w_value).handle
+        except OperationError, e:
+            # If not, try to convert it to a transient W_Value instance.
+            if not e.match(space, space.w_TypeError):
+                raise
+            h_value = self._convert_transiently()
+            if h_value == support.EMJS_ERROR:
+                raise
+            self.h_transient = h_value
+            return h_value
+
+    def __exit__(self, exc_typ, exc_val, exc_tb):
+        if self.h_transient != support.EMJS_ERROR:
+            support.emjs_free(self.h_transient)
+
+    def _convert_transiently(self):
+        space = self.space
+        w_value = self.w_value
+        if space.is_w(w_value, space.w_None):
+            return support.emjs_make_undefined()
+        if space.isinstance_w(w_value, space.w_int):
+            return support.emjs_make_int32(space.int_w(w_value))
+        if space.isinstance_w(w_value, space.w_long):
+            return support.emjs_make_int32(space.int_w(w_value))
+        if space.isinstance_w(w_value, space.w_float):
+            return support.emjs_make_double(space.float_w(w_value))
+        if space.isinstance_w(w_value, space.w_str):
+            value = space.str_w(w_value)
+            return support.emjs_make_strn(value, len(value))
+        # XXX TODO: auto-convert functions to callbacks.
+        #if space.isinstance_w(w_value, InterpFunction)):
+        #    h_cb, cb = _make_callback(space, w_value, False, ())
+        #    self.cb_transient = cb 
+        #    return h_cb
+        #if space.isinstance_w(w_value, space.wrap(InterpMethod)):
+        #    h_cb, cb = _make_callback(space, w_value, False, ())
+        #    self.cb_transient = cb 
+        #    return h_cb
+        return support.EMJS_ERROR
+
+
+def _check_error(space, result):
+    if result == support.EMJS_ERROR:
+        _raise_error(space)
+
+
+def globals(space):
+    """Get a reference to the global scope 'this' object."""
+    h = support.emjs_globals()
+    return _wrap_handle(space, h)
+
+
+@unwrap_spec(data=str)
+def eval(space, data):
+    """Evaluate javascript code at global scope."""
+    h = support.emjs_eval(data)
+    return _wrap_handle(space, h)
+
+
+def bind(space, w_fn, w_ctx):
+    """Create a copy of a function, bound to the given context."""
+    func = space.interp_w(W_Function, w_fn)
+    h_bound = support.emjs_dup(func.handle)
+    _check_error(space, h_bound)
+    bound = W_Function(h_bound, w_ctx, func.callback)
+    return space.wrap(bound)
+
+
+def new(space, w_fn, args_w):
+    with _unwrap_handle(space, w_fn) as h_fn:
+        h_args = support.emjs_make_array(len(args_w))
+        _check_error(space, h_args)
+        for i in xrange(len(args_w)):
+            with _unwrap_handle(space, args_w[i]) as h_arg:
+                res = support.emjs_prop_set_int(h_args, i, h_arg)
+            _check_error(space, res)
+        h_res = support.emjs_new(h_fn, h_args)
     return _wrap_handle(space, h_res)
 
 
-def Function(space, w_callback, __args__):
-    h_res, callback = _make_callback(space, w_callback, __args__)
-    return _wrap_handle(space, h_res, callback)
+def equal(space, w_lhs, w_rhs):
+    """Invoking the javascript "==" operator betwee two values.
+
+    The default equality operator for js.Value objects is mapped to
+    javascript's strict "===" operator, for what are hopefully obvious
+    reasons. This helper function exists for those rare cases when you
+    actually *want* the wacky behaviour of the non-strict variant.
+    """
+    with _unwrap_handle(space, w_lhs) as h_lhs:
+        with  _unwrap_handle(space, w_rhs) as h_rhs:
+            res = support.emjs_op_eq(h_lhs, h_rhs)
+    _check_error(space, res)
+    return space.newbool(bool(res))
 
 
-class W_Method(W_Value):
+def instanceof(space, w_lhs, w_rhs):
+    with _unwrap_handle(space, w_lhs) as h_lhs:
+        with  _unwrap_handle(space, w_rhs) as h_rhs:
+            res = support.emjs_op_instanceof(h_lhs, h_rhs)
+    _check_error(space, res)
+    return space.newbool(bool(res))
 
-    def __init__(self, handle, w_ctx):
-        W_Value.__init__(self, handle)
-        self.w_ctx = w_ctx
+
+def urshift(space, w_lhs, w_rhs):
+    with _unwrap_handle(space, w_lhs) as h_lhs:
+        with  _unwrap_handle(space, w_rhs) as h_rhs:
+            h_res = support.emjs_op_bw_urshift(h_lhs, h_rhs)
+    return _wrap_handle(space, h_res)
 
 
-def _make_callback(space, w_callback, args):
-    callback = Callback(space, w_callback, args)
+def uint32(space, w_value):
+    with _unwrap_handle(space, w_value) as h_value:
+        res = support.emjs_read_uint32(h_value)
+    return space.wrap(res)
+
+
+def _make_callback(space, w_callback, wants_this, args):
+    callback = Callback(space, w_callback, wants_this, args)
     dataptr = rffi.cast(rffi.VOIDP, callback.id)
-    ll_dispatch_callback = rffi.llhelper(CALLBACK_TP, dispatch_callback)
-    return emjs_make_callback(ll_dispatch_callback, dataptr), callback
+    ll_dispatch_callback = rffi.llhelper(support.CALLBACK_TP, dispatch_callback)
+    return support.emjs_make_callback(ll_dispatch_callback, dataptr), callback
 
 
 class Callback(object):
 
-    def __init__(self, space, w_callback, __args__):
+    def __init__(self, space, w_callback, wants_this, __args__):
         self.id = global_callback_map.add(self)
         self.space = space
         self.w_callback = w_callback
+        self.wants_this = wants_this
         self.__args__ = __args__
 
 
@@ -801,117 +826,61 @@ def dispatch_callback(dataptr, h_args):
         raise RuntimeError("invalid callback id; was it garbage-collected?")
     space = callback.space
     # Unpack h_args as an extension of the default args from the callback.
-    # XXX TODO: what to do about args.this?
-    # XXX TODO: keyword arguments, and general cleanup of the below mess...
+    # If the callback wants the value of 'this', pass it as first argument.
     args_w, kw_w = callback.__args__.unpack()
     if kw_w:
         raise RuntimeError("callback function kw args not implemented yet")
-    h_args_len = emjs_length(h_args)
-    all_args_w = [None] * (len(args_w) + h_args_len)
-    for i, w_arg in enumerate(args_w):
+    h_args_len = support.emjs_length(h_args)
+    all_args_len = len(args_w) + h_args_len
+    if callback.wants_this:
+        all_args_len += 1
+    all_args_w = [None] * all_args_len
+    i = 0
+    if callback.wants_this:
+        h_this = support.emjs_prop_get_str(h_args, "this")
+        w_this = _wrap_handle(space, h_this)
+        all_args_w[0] = w_this
+        i += 1
+    for w_arg in args_w:
         all_args_w[i] = w_arg
-    for i in xrange(emjs_length(h_args)):
-        w_arg = _wrap_handle(space, emjs_prop_get_int(h_args, i))
-        all_args_w[i + len(args_w)] = w_arg
+        i += 1
+    for j in xrange(h_args_len):
+        w_arg = _wrap_handle(space, support.emjs_prop_get_int(h_args, j))
+        all_args_w[i] = w_arg
+        i += 1
+    # Do the call, propagating return value or error as appropriate.
     try:
         w_res = space.call(callback.w_callback, space.newtuple(all_args_w))
     except OperationError, pyerr:
+        # XXX TODO: tunnel the exception through JS and back to Python?
         # XXX TODO: allow the callback to raise js.Error and reflect it
         # properly through to the javascript side.
-        # XXX TODO: tunnel the exception through JS and back to Python?
-        # We could do this by e.g. throwing a special object...
-        w_jserr = String(space, pyerr.errorstr(space))
-        with _unwrap_handle(space, w_jserr) as h_jserr:
-            emjs_set_error(h_jserr)
-        return EMJS_ERROR
+        # w_jserror = getstate(space).w_jserror
+        # if isinstance(pyerr, w_jserror):
+        #    with _unwrap_handle(pyerror.args[0]) as h_err:
+        #        support.emjs_set_error(h_err)
+        # else:
+        #    h_msg = make_error_string()
+        #    h_data = make_error_pickle()
+        #    h_err = new(h_pyerror, [h_msg, h_data])
+        #    support.emjs_set_error(h_err)
+        #    support.emjs_free(h_err)
+        errmsg = pyerr.errorstr(space)
+        h_errmsg = support.emjs_make_strn(errmsg, len(errmsg))
+        support.emjs_set_error(h_errmsg)
+        support.emjs_free(h_errmsg)
+        return support.EMJS_ERROR
     else:
         # Note that the js-side callback stub frees the result handle,
         # so we have to dup it here to avoid breaking the w_res object.
+        # XXX TODO: avoid the dup for transiently-unwrapped values.
         with _unwrap_handle(space, w_res) as h_res:
-            return emjs_dup(h_res)
+            return support.emjs_dup(h_res)
 
 
-undefined = W_Value(EMJS_UNDEFINED)
-null = W_Value(EMJS_NULL)
-false = W_Value(EMJS_FALSE)
-true = W_Value(EMJS_TRUE)
+# Some useful singleton instances.
 
-
-def W_Value_descr__call__(space, w_self, args_w):
-    # XXX TODO: maybe we can pass 'this' as a keyword argument?
-    self = space.interp_w(W_Value, w_self)
-    h_args = emjs_make_array(len(args_w))
-    _check_error(space, h_args)
-    for i in xrange(len(args_w)):
-        with _unwrap_handle(space, args_w[i]) as h_arg:
-            emjs_prop_set_int(h_args, i, h_arg)
-    h_res = emjs_apply(self.handle, EMJS_UNDEFINED, h_args)
-    return _wrap_handle(space, h_res)
-
-
-def W_Method_descr__call__(space, w_self, args_w):
-    self = space.interp_w(W_Method, w_self)
-    ctx = space.interp_w(W_Value, self.w_ctx)
-    h_args = emjs_make_array(len(args_w))
-    _check_error(space, h_args)
-    for i in xrange(len(args_w)):
-        with _unwrap_handle(space, args_w[i]) as h_arg:
-            emjs_prop_set_int(h_args, i, h_arg)
-    h_res = emjs_apply(self.handle, ctx.handle, h_args)
-    return _wrap_handle(space, h_res)
-
-
-W_Value.typedef = TypeDef(
-    "Value",
-    __doc__ = "Handle to an abstract JS value.",
-    __call__ = interp2app(W_Value_descr__call__),
-    __repr__ = interp2app(W_Value.descr__repr__),
-    __str__ = interp2app(W_Value.descr__str__),
-    __bool__ = interp2app(W_Value.descr__bool__),
-    __float__ = interp2app(W_Value.descr__float__),
-    __int__ = interp2app(W_Value.descr__int__),
-    __eq__ = interp2app(W_Value.descr__eq__),
-    __ne__ = interp2app(W_Value.descr__ne__),
-    __lt__ = interp2app(W_Value.descr__lt__),
-    __le__ = interp2app(W_Value.descr__le__),
-    __gt__ = interp2app(W_Value.descr__gt__),
-    __ge__ = interp2app(W_Value.descr__ge__),
-    __getitem__ = interp2app(W_Value.descr__getitem__),
-    __setitem__ = interp2app(W_Value.descr__setitem__),
-    __delitem__ = interp2app(W_Value.descr__delitem__),
-    __getattr__ = interp2app(W_Value.descr__getattr__),
-    __setattr__ = interp2app(W_Value.descr__setattr__),
-    __delattr__ = interp2app(W_Value.descr__delattr__),
-    __add__ = interp2app(W_Value.descr__add__),
-    __sub__ = interp2app(W_Value.descr__sub__),
-    __mul__ = interp2app(W_Value.descr__mul__),
-    __div__ = interp2app(W_Value.descr__div__),
-    __truediv__ = interp2app(W_Value.descr__truediv__),
-    __mod__ = interp2app(W_Value.descr__mod__),
-    __lshift__ = interp2app(W_Value.descr__lshift__),
-    __rshift__ = interp2app(W_Value.descr__rshift__),
-    __and__ = interp2app(W_Value.descr__and__),
-    __or__ = interp2app(W_Value.descr__or__),
-    __xor__ = interp2app(W_Value.descr__xor__),
-    __neg__ = interp2app(W_Value.descr__neg__),
-    __pos__ = interp2app(W_Value.descr__pos__),
-    __invert__ = interp2app(W_Value.descr__invert__),
-    __contains__ = interp2app(W_Value.descr__contains__),
-    # XXX TODO: move __len__ onto appropriate subclasses only
-    __len__ = interp2app(W_Value.descr__len__),
-    # TODO: __new__, for subtypes where it makes sense
-    # TODO: __hash__, but only for immutable types
-    # TODO: __dir__ and/or __iter__ for object types
-    # TODO: swapped variants of the arithmetic operators?
-)
-
-
-W_Method.typedef = TypeDef(
-    "Method",
-    (W_Value.typedef,),
-    __doc__ = "Handle to a JS function with bound context.",
-    __call__ = interp2app(W_Method_descr__call__),
-    # XXX TODO: expose the underlying function as a property?
-    # I think there is a "GetSetProperty" typedef thing that can do this.
-)
-
+undefined = W_Undefined(support.EMJS_UNDEFINED)
+null = W_Object(support.EMJS_NULL)
+false = W_Boolean(support.EMJS_FALSE)
+true = W_Boolean(support.EMJS_TRUE)

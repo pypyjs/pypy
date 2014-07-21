@@ -82,10 +82,10 @@ var LibraryEMJS = {
     if (h <= EMJS.MAX_STATIC_HANDLE) {
       return h;
     }
-    return _emjs_make_handle(_emjs_deref(ref));
+    return _emjs_make_handle(_emjs_deref(h));
   },
 
-  emjs_globals: ['emjs_make_handle'],
+  emjs_globals__deps: ['emjs_make_handle'],
   emjs_globals: function() {
     return _emjs_make_handle(this);
   },
@@ -542,8 +542,7 @@ var LibraryEMJS = {
     try {
       var lhs = _emjs_deref(lhs_h);
       var rhs = _emjs_deref(rhs_h);
-      var res = lhs in rhs;
-      return _emjs_make_handle(res);
+      return lhs in rhs;
     } catch (err) { EMJS.last_error = err; return EMJS.ERROR; }
   },
 
@@ -552,8 +551,7 @@ var LibraryEMJS = {
     try {
       var lhs = _emjs_deref(lhs_h);
       var rhs = _emjs_deref(rhs_h);
-      var res = lhs instanceof rhs;
-      return _emjs_make_handle(res);
+      return lhs instanceof rhs;
     } catch (err) { EMJS.last_error = err; return EMJS.ERROR; }
   },
 
