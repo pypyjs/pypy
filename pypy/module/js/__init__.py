@@ -32,8 +32,8 @@ interpreter.
         'null': 'interp_js.null',
         'false': 'interp_js.false',
         'true': 'interp_js.true',
+        'globals': 'space.fromcache(interp_js.State).w_globals',
         # Helper functions to things that don't map nicely to python.
-        'globals': 'interp_js.globals',
         'eval': 'interp_js.eval',
         'bind': 'interp_js.bind',
         'new': 'interp_js.new',

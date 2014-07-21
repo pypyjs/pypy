@@ -365,6 +365,8 @@ class W_String(W_Value):
         _check_error(space, res)
         return space.wrap(res)
 
+    # XXX TODO: fun things like slicing?
+
 
 def W_String_descr__new__(space, w_subtype, w_value):
     w_self = space.allocate_instance(W_String, w_subtype)
@@ -563,11 +565,16 @@ class State:
         self.h_globals = 0
         self.h_array = 0
         self.h_pyerror = 0
+        # A permanent object for accessing global scope.
+        # This gets assigned the proper handle at module initialization.
+        self.w_globals = space.wrap(W_Object(support.EMJS_ERROR))
 
     def startup(self, space):
         # Hold a permanent handle to the globals object.
         self.h_globals = support.emjs_globals()
         _check_error(space, self.h_globals)
+        # And a permanent object while we're at it.
+        self.w_globals.handle = self.h_globals
         # Hold a permanent handle to the Array type constructor.
         self.h_array = support.emjs_prop_get_str(self.h_globals, "Array")
         _check_error(space, self.h_array)
