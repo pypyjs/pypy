@@ -618,6 +618,11 @@ def _raise_error(space):
         raise OperationError(w_jserror, _wrap_handle(space, h_err))
 
 
+def _check_error(space, result):
+    if result == support.EMJS_ERROR:
+        _raise_error(space)
+
+
 def _wrap_handle(space, handle):
     """Helper function to wrap a handle into an appropriate app-level object.
 
@@ -656,14 +661,13 @@ class _unwrap_handle(object):
     This class can manage both existing W_Value instances, and do transient
     conversion of immutable app-level datatypes such as ints and strings.  It
     needs to be a context-manager to allow proper lifetime management of
-    such transient handles.
+    such transient handles, keeping them alive until the end of the block.
     """
 
     def __init__(self, space, w_value):
         self.space = space
         self.w_value = w_value
-        self.h_transient = support.EMJS_ERROR
-        self.cb_transient = None
+        self.w_transient = None
 
     def __enter__(self):
         space = self.space
@@ -675,45 +679,55 @@ class _unwrap_handle(object):
             # If not, try to convert it to a transient W_Value instance.
             if not e.match(space, space.w_TypeError):
                 raise
-            h_value = self._convert_transiently()
-            if h_value == support.EMJS_ERROR:
-                raise
-            self.h_transient = h_value
-            return h_value
+            self.w_transient = _convert(space, w_value)
+            return self.w_transient.handle
 
     def __exit__(self, exc_typ, exc_val, exc_tb):
-        if self.h_transient != support.EMJS_ERROR:
-            support.emjs_free(self.h_transient)
-
-    def _convert_transiently(self):
-        space = self.space
-        w_value = self.w_value
-        if space.is_w(w_value, space.w_None):
-            return support.emjs_make_undefined()
-        if space.isinstance_w(w_value, space.w_int):
-            return support.emjs_make_int32(space.int_w(w_value))
-        if space.isinstance_w(w_value, space.w_long):
-            return support.emjs_make_int32(space.int_w(w_value))
-        if space.isinstance_w(w_value, space.w_float):
-            return support.emjs_make_double(space.float_w(w_value))
-        if space.isinstance_w(w_value, space.w_str):
-            value = space.str_w(w_value)
-            return support.emjs_make_strn(value, len(value))
-        # XXX TODO: auto-convert functions to callbacks.
-        #if space.isinstance_w(w_value, InterpFunction)):
-        #    h_cb, cb = _make_callback(space, w_value, False, ())
-        #    self.cb_transient = cb 
-        #    return h_cb
-        #if space.isinstance_w(w_value, space.wrap(InterpMethod)):
-        #    h_cb, cb = _make_callback(space, w_value, False, ())
-        #    self.cb_transient = cb 
-        #    return h_cb
-        return support.EMJS_ERROR
+        # A transient handle will be cleaned up by normal garbage collection.
+        # We just needed to keep it alive until the end of the block.
+        pass
 
 
-def _check_error(space, result):
-    if result == support.EMJS_ERROR:
-        _raise_error(space)
+def _convert(space, w_value):
+    """Convert a wrapped value into a wrapped W_Value."""
+    if space.is_w(w_value, space.w_None):
+        return undefined
+    if space.isinstance_w(w_value, space.w_int):
+        return W_Number(support.emjs_make_int32(space.int_w(w_value)))
+    if space.isinstance_w(w_value, space.w_long):
+        return W_Number(support.emjs_make_int32(space.int_w(w_value)))
+    if space.isinstance_w(w_value, space.w_float):
+        return W_Number(support.emjs_make_double(space.float_w(w_value)))
+    if space.isinstance_w(w_value, space.w_str):
+        value = space.str_w(w_value)
+        return W_String(support.emjs_make_strn(value, len(value)))
+    # XXX TODO: is this typecheck safe and accurate?
+    if isinstance(w_value, pypy.interpreter.function.Function):
+        args = pypy.interpreter.function.Arguments(space, [])
+        h_cb, cb = _make_callback(space, w_value, False, args)
+        return W_Function(h_cb, None, cb)
+    if isinstance(w_value, pypy.interpreter.function.Method):
+        args = pypy.interpreter.function.Arguments(space, [])
+        h_cb, cb = _make_callback(space, w_value, False, args)
+        return W_Function(h_cb, None, cb)
+    errmsg = "could not convert py type to js type"
+    raise OperationError(space.w_TypeError, space.wrap(errmsg))
+
+
+def convert(space, w_value):
+    """Convert a python value into a matching Value instance.
+
+    This function can convert immutable primitive python objects (e.g. ints
+    and strings) into matching javascript Value objects.  It raises TypeError
+    for objects that cannot be converted.
+    """
+    try:
+        # XXX TODO: how to check this without using try-except?
+        return space.wrap(space.interp_w(W_Value, w_value))
+    except OperationError, e:
+        if not e.match(space, space.w_TypeError):
+            raise
+        return space.wrap(_convert(space, w_value))
 
 
 def globals(space):

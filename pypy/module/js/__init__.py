@@ -34,6 +34,7 @@ interpreter.
         'true': 'interp_js.true',
         'globals': 'space.fromcache(interp_js.State).w_globals',
         # Helper functions to things that don't map nicely to python.
+        'convert': 'interp_js.convert',
         'eval': 'interp_js.eval',
         'bind': 'interp_js.bind',
         'new': 'interp_js.new',
