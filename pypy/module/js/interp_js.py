@@ -215,9 +215,17 @@ class W_Value(W_Root):
         return space.newbool(bool(res))
 
 
+def W_Value_descr__new__(space, w_subtype, w_handle):
+    # The base Value constructor can be used to wrap raw integer handles.
+    # Subclass constructors do sophisticated conversion for specific types.
+    # XXX TODO: yeah, we should rename it from "Value" to "Handle".
+    return _wrap_handle(space, space.int_w(w_handle))
+
+
 W_Value.typedef = TypeDef(
     "Value",
     __doc__ = "Handle to an abstract JS value.",
+    __new__ = interp2app(W_Value_descr__new__),
     __repr__ = interp2app(W_Value.descr__repr__),
     __str__ = interp2app(W_Value.descr__str__),
     __bool__ = interp2app(W_Value.descr__bool__),
