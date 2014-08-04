@@ -49,7 +49,7 @@ class EmscriptenPlatform(BasePosix):
       "-Os",
       "--llvm-lto", "3",
       "--llvm-opts", repr(["-Os"] + llvm_opts),
-      "-s", "INLIMING_LIMIT=20",
+      "-s", "INLINING_LIMIT=20",
       # These are things that we've found to work OK with the generated code.
       # and give a good performance/code-size tradeoff.
       "-s", "FORCE_ALIGNED_MEMORY=1",
