@@ -1760,11 +1760,15 @@ class RegisterOs(BaseLazyRegistering):
 
     @registering_if(os, 'openpty')
     def register_os_openpty(self):
+        if sys.platform.startswith("linux"):
+            includes = ['pty.h']
+        elif sys.platform == "darwin":
+            includes = ['util.h']
         os_openpty = self.llexternal(
             'openpty',
             [rffi.INTP, rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.INT,
-            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=['pty.h']))
+            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=includes))
         def openpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
             slave_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
@@ -1784,11 +1788,15 @@ class RegisterOs(BaseLazyRegistering):
     @registering_if(os, 'forkpty')
     def register_os_forkpty(self):
         from rpython.rlib import debug, rthread
+        if sys.platform.startswith("linux"):
+            includes = ['pty.h']
+        elif sys.platform == "darwin":
+            includes = ['util.h']
         os_forkpty = self.llexternal(
             'forkpty',
             [rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.PID_T,
-            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=['pty.h']))
+            compilation_info=ExternalCompilationInfo(libraries=['util'],includes=includes))
         def forkpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
             master_p[0] = rffi.cast(rffi.INT, -1)
