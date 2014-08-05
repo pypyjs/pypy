@@ -9,6 +9,7 @@ import random
 import unittest
 import subprocess
 
+from rpython.translator.platform import emscripten_platform
 from rpython.jit.backend.asmjs import support, jsvalue, jsbuilder
 
 MAX_INT_32 = int(2**31 - 1)
@@ -70,8 +71,9 @@ def execute_py(jssrc):
 
 def execute_js(jssrc):
     """Execute the  given JS by shelling out to an interpreter."""
-    p = subprocess.Popen(['js'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
+    jsshell = emscripten_platform.find_javascript_shell()
+    p = subprocess.Popen([jsshell], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     p.stdin.write(jssrc)
     p.stdin.write("\n")
     stdlib = "{Math:Math, Int8Array:Int8Array, Int16Array:Int16Array, " \

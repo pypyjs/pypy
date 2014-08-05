@@ -20,6 +20,16 @@ def find_executable(filename, environ=None):
     return None
 
 
+def find_javascript_shell():
+    """Find an executable javascript shell."""
+    jsshell = find_executable("js")
+    if jsshell is None:
+        jsshell = find_executable("node")
+        if jsshell is None:
+            raise RuntimeError("Could not find javascript shell")
+    return jsshell
+
+
 class EmscriptenPlatform(BasePosix):
     """Platform for compiling to javascript via emscripten.
 
@@ -117,11 +127,7 @@ class EmscriptenPlatform(BasePosix):
             args = str(executable) + " " + args
         else:
             args = [str(executable)] + args
-        jsshell = find_executable("js")
-        if jsshell is None:
-            jsshell = find_executable("node")
-            if jsshell is None:
-                raise RuntimeError("Could not find javascript shell")
+        jsshell = find_javascript_shell()
         super_cls = super(EmscriptenPlatform, self)
         return super_cls.execute(jsshell, args, env, *a, **k)
 
