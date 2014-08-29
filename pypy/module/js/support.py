@@ -9,6 +9,8 @@ from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.translator.platform import emscripten_platform
 
 
+# Parse the C include files for constants, type defns, etc.
+
 emscripten_include_dirs = [
     os.path.dirname(os.path.abspath(emscripten_platform.__file__)),
 ]
@@ -56,20 +58,117 @@ EMJS_TYPE_TP = cConfig.emjs_type
 CALLBACK_TP = rffi.CCallback([rffi.VOIDP, EMJS_HANDLE_TP], EMJS_HANDLE_TP)
 
 
-def jsexternal(args, result, **kwds):
-    """Decorator to define stubbed-out external javascript functions.
+# This will on-demand load the javascript library for the implementation
+# of all supporting functions.  it uses the PyV8 engine to run the javascript.
 
-    This decorator can be applied to a python function to register it as
-    the stubbed-out implementation of an external javascript function.
-    The llinterpreter will run the python code, the compiled interpreter
-    will link to the javascript function of the same name.
+ctx = None
+_strings = {}
+_string_id = 1
+
+def load_javascript_ctx():
+    global ctx
+    if ctx is not None:
+        return ctx
+
+    import PyV8
+    ctx = PyV8.JSContext()
+
+    with ctx:
+
+        # Simulate in some of the emscripten runtime environment.
+        # The tricky part here is handling string reads/writes.
+        # For now we maintain our own int<->string mapping, but it should
+        # be possible to use cast_ptr_to_int and friends aehre.
+
+        def Pointer_stringify(ptr, *args):
+            string = _strings[ptr]
+            string = "".join(string)
+            if args:
+                string = string[:args[0]]
+            while string[-1] == "\x00":
+                string = string[:-1]
+            return string
+
+        def intArrayFromString(string, noNull=False):
+            intArray = []
+            for c in string:
+                intArray.append(ord(c))
+            if not noNull:
+                intArray.apend(0)
+            return PyV8.JSArray(intArray)
+
+        def doSetChar(ptr, idx, char):
+            string = _strings[ptr]
+            string[idx] = chr(char)
+
+        def mergeInto(dst, src):
+            pass
+
+        def debug(*args):
+            print args
+    
+        ctx.locals.LibraryManager = { "library": {} }
+        ctx.locals.Pointer_stringify = Pointer_stringify
+        ctx.locals.intArrayFromString = intArrayFromString
+        ctx.locals.doSetChar = doSetChar
+        ctx.locals.mergeInto = mergeInto
+        ctx.locals.debug = debug
+
+        # Load the library source in this environment.
+
+        srcfile = os.path.join(
+            os.path.dirname(emscripten_platform.__file__),
+            "library_emjs.js",
+        )
+        with open(srcfile, "r") as f:
+            src = f.read()
+            src = src.replace("makeSetValue('bufptr', 'i', 'chr', 'i8')",
+                              "doSetChar(bufptr, i, chr)")
+            ctx.eval(src)
+
+        # Apply emscripten name-mangling rules.
+
+        lib_emjs = ctx.locals.LibraryEMJS
+        for nm in dir(lib_emjs):
+            if nm.startswith("$"):
+                setattr(ctx.locals, nm[1:], getattr(lib_emjs, nm))
+            elif nm.startswith("emjs_"):
+                setattr(ctx.locals, "_"+nm, getattr(lib_emjs, nm))
+
+    return ctx
+
+
+# Declare each function as a python wrapper to the js implementation,
+# with appropriate external info for the build process.
+
+def jsexternal(args_t, result_t, **kwds):
+    """Decorator to declare javascript functions from library_emjs.
+
+    This decorator can be applied to a stub python function to register it as
+    placeholder for an external javascript function.  The llinterpreter will
+    be redirected to run the loadted javascript code for that function, while
+    the compiled interpreter will link to the javascript function of the same
+    name at runtime.
     """
     def do_register(func):
-        kwds.setdefault('_callable', func)
+        def jsfunc(*args):
+            global _string_id
+            ctx = load_javascript_ctx()
+            args = list(args)
+            my_strings = []
+            for i, arg in enumerate(args):
+                if args_t[i] == rffi.CCHARP:
+                    _strings[_string_id] = arg
+                    args[i] = _string_id
+                    my_strings.append(_string_id)
+                    _string_id += 1
+            with ctx:
+                return getattr(ctx.locals, "_"+func.__name__)(*args)
+        kwds.setdefault('_callable', jsfunc)
         kwds.setdefault('random_effects_on_gcobjs', False)
         kwds.setdefault('_nowrapper', True)
         kwds.setdefault('compilation_info', eci)
-        return rffi.llexternal(func.__name__, args, result, **kwds)
+        return rffi.llexternal(func.__name__, args_t, result_t, **kwds)
     return do_register
 
 
@@ -217,7 +316,7 @@ def emjs_set_error(h):
 
 
 @jsexternal([], lltype.Void)
-def emjs_clear_error(h):
+def emjs_clear_error():
     raise NotImplementedError
 
 
