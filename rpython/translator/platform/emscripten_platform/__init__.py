@@ -54,6 +54,10 @@ class EmscriptenPlatform(BasePosix):
       "-v",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
       "-s", "GC_SUPPORT=0",
+      # This disables an emscripten workaround for a nodejs bug, which has
+      # the unfortunate side-effect of printing an extra newline.  It doesn't
+      # seem necessary and messes with pypy's script parsing of program output.
+      "-s", "NODE_STDOUT_FLUSH_WORKAROUND=0",
       # General llvm optimizations.  These seem to give a good tradeoff
       # between size and speed of the generated code.
       "-Os",
@@ -71,7 +75,6 @@ class EmscriptenPlatform(BasePosix):
       "-s", "EXPORT_ALL=1",
       # Sadly, asmjs requires a fixed pre-allocated array for memory.
       # We default to a modest 64MB; this can be changed in the JS at runtime.
-      # XXX TODO: figure out a better memory-size story.
       # XXX TODO: automatically limit the GC to this much memory.
       # XXX TODO: ensure that pypy GC can detect when this runs out.
       "-s", "TOTAL_MEMORY=67108864",
@@ -104,8 +107,6 @@ class EmscriptenPlatform(BasePosix):
     ]
 
     extra_environ = {
-        # We're still trialling fastcomp, here's a handy way to turn it off.
-        #"EMCC_FAST_COMPILER": "0",
         # Needed when running closure compiler.
         "JAVA_HEAP_SIZE": "4096m",
     }
