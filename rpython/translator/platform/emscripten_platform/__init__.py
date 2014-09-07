@@ -47,7 +47,7 @@ class EmscriptenPlatform(BasePosix):
     standalone_only = []
     shared_only = []
 
-    llvm_opts = ["-constmerge"] #, "-mergefunc"]
+    llvm_opts = [] # ["-mergefunc"]  unfortunately this infinite-loops clang
 
     cflags = [
       # Misc helpful/sensible flags.
@@ -63,7 +63,6 @@ class EmscriptenPlatform(BasePosix):
       "-Os",
       "--llvm-lto", "3",
       "--llvm-opts", repr(["-Os"] + llvm_opts),
-      "-s", "INLINING_LIMIT=20",
       # These are things that we've found to work OK with the generated code.
       # and give a good performance/code-size tradeoff.
       "-s", "FORCE_ALIGNED_MEMORY=1",
@@ -147,16 +146,9 @@ class EmscriptenPlatform(BasePosix):
         )
         ldflags = m.lines[m.defs["LDFLAGS"]].value
         cflags = m.lines[m.defs["CFLAGS"]].value
-        # Embed parts of the build dir as files in the final executable.
-        # This is necessary so the pypy interpreter can find its files,
-        # but is useless for generic rpython apps.
-        # XXX TODO: find a more elegant way to achieve this only when needed.
-        # There's apparently a "VFS" system under development for emscripten
-        # which might make the need for this go away.
-        #ldflags.extend([
-        #  "--embed-file", os.path.join(str(pypy_root_dir), "lib-python") + "@" + os.path.join(str(pypy_root_dir), "lib-python")[1:],
-        #  "--embed-file", os.path.join(str(pypy_root_dir), "lib_pypy") + "@" + os.path.join(str(pypy_root_dir), "lib_pypy")[1:],
-        #])
+        # XXX TODO: remove this:
+        idx = ldflags.index("--memory-init-file")
+        ldflags[idx + 1] = "1"
         # Export only the entry-point functions, plus a few generally-useful
         # helper functions.
         idx = ldflags.index("EXPORT_ALL=1")
@@ -174,6 +166,11 @@ class EmscriptenPlatform(BasePosix):
         ldflags.extend([
             "-O3",
         ])
+        # Use -Oz for final LLVM LTO.  This avoids adding extra size
+        # to the final output file, while still allowing some cross-file
+        # optimizations to be performed.
+        idx = ldflags.index("--llvm-opts")
+        ldflags[idx + 1] = repr(["-Oz"] + self.llvm_opts)
         # Ensure that --llvm-opts appears properly quoted in the makefile.
         idx = ldflags.index("--llvm-opts")
         ldflags[idx + 1] = repr(ldflags[idx + 1])
