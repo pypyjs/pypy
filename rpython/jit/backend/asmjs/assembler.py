@@ -1033,7 +1033,7 @@ class CompiledBlockASMJS(object):
         self.bldr = None
         self.inputargs = None
         self.operations = None
-        self.longevity = None
+        self.longevity = {}
         self.spilled_frame_locations = None
         self.spilled_frame_values = None
         self.spilled_frame_offset = 0
