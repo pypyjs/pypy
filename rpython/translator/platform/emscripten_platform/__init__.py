@@ -1,4 +1,5 @@
 import py, os
+import itertools
 
 from rpython.translator.platform.posix import BasePosix, rpydir, GnuMakefile
 from rpython.translator.platform import log, _run_subprocess
@@ -49,7 +50,7 @@ class EmscriptenPlatform(BasePosix):
 
     llvm_opts = [] # ["-mergefunc"]  unfortunately this infinite-loops clang
 
-    cflags = [
+    emcc_flags = [
       # Misc helpful/sensible flags.
       "-v",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
@@ -80,30 +81,26 @@ class EmscriptenPlatform(BasePosix):
       # Some dummy includes to convince things to compile properly.
       # XXX TODO: only include these when needed.
       "-I", os.path.dirname(__file__),
-      # For compiling with JIT.
-      # XXX TODO: only include this when jit is enabled.
-      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
-      "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_ffi.js"),
-      "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_emjs.js"),
       # Extra sanity-checking.
       # Enable these if things go wrong.
       #"-s", "ASSERTIONS=1",
       #"-s", "SAFE_HEAP=1",
     ]
 
-    link_flags = list(cflags)
-    link_flags += [
-      # This preserves sensible names in the generated JS.
-      # Useful for debugging, but turn this off in production.
-      #"-g2",
+    cflags = list(emcc_flags) + \
+             [flag.strip() for flag in os.environ.get("CFLAGS", "").split()]
+
+    link_flags = list(emcc_flags) + [
+      # For compiling with the JIT.
+      # Emscripten is smart enough to pull in only the bits of code that it
+      # needs here, so it's OK to list them all even if some are not used.
+      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
+      "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_ffi.js"),
+      "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_emjs.js"),
       # Disable the use of a separate memory-initializer file.
       # Such file makes it harder to run the compiled code during the build.
       "--memory-init-file", "0",
-      # Necessary for ctypes support.
-      #"-s", "DLOPEN_SUPPORT=1",
-      #"-s", "INCLUDE_FULL_LIBRARY=1",
-      # XXX TODO: use DEFAULT_LIBRARY_FUNCS_TO_INCLUDE to force the ffi lib
-    ]
+    ] + [flag.strip() for flag in os.environ.get("LDFLAGS", "").split()]
 
     extra_environ = {
         # Needed when running closure compiler.
@@ -146,6 +143,22 @@ class EmscriptenPlatform(BasePosix):
         )
         ldflags = m.lines[m.defs["LDFLAGS"]].value
         cflags = m.lines[m.defs["CFLAGS"]].value
+        # Find what debug level we're linking at, based on environ flags.
+        debug_level = 0
+        for flag in ldflags:
+            if flag.startswith("-g"):
+                if flag == "-g":
+                    debug_level = 3
+                else:
+                    debug_level = int(flag[2:])
+        # At debug level zero, insert a stub header file that avoids
+        # capturing rpython-level traceback information.  Such tracebacks
+        # should only be for interpreter debugging, and add many megabytes
+        # of strings to the final build size.
+        if debug_level == 0:
+            incl = os.path.join(os.path.dirname(__file__), "no-debug")
+            cflags.insert(0, "-I")
+            cflags.insert(1, incl)
         # Export only the entry-point functions, plus a few generally-useful
         # helper functions.
         idx = ldflags.index("EXPORT_ALL=1")
