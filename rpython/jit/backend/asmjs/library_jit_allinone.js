@@ -100,6 +100,7 @@ var LibraryJIT = {
     for (var id=1; id < Module._jitCompiledFunctions.length; id++) {
       var importRE = expr = /var ([a-zA-Z0-0_]+) = foreign\.[a-zA-Z0-9_]+;/g;
       var funcsrc = Module._jitCompiledFunctions[id];
+      if (funcsrc === null) continue;
       var importRes;
       while ((importRes = importRE.exec(funcsrc)) !== null) {
         if (!doneImports[importRes[1]]) {
@@ -113,15 +114,18 @@ var LibraryJIT = {
     funcTableSize = Math.pow(2, funcTableSize);
     for (var id=1; id < Module._jitCompiledFunctions.length; id++) {
       var funcsrc = Module._jitCompiledFunctions[id];
-      var bodystart = funcsrc.indexOf("function ", 10)
-      var bodystart = funcsrc.indexOf("(", bodystart)
-      var bodyend = funcsrc.lastIndexOf("}")
-      var bodyend = funcsrc.lastIndexOf("}", bodyend - 2)
-      var funcbody = funcsrc.substring(bodystart, bodyend + 1)
-      // Avoid redirecting through jitInvoke helper.
-      funcbody = funcbody.replace(/jitInvoke\(([0-9]+),/g, function(m, id) {
-        return "FUNCS[" + id + " & " + (funcTableSize-1) + "]("
-      })
+      var funcbody = "(){return jitAbort()|0;}";
+      if (funcsrc !== null) {
+        var bodystart = funcsrc.indexOf("function ", 10)
+        var bodystart = funcsrc.indexOf("(", bodystart)
+        var bodyend = funcsrc.lastIndexOf("}")
+        var bodyend = funcsrc.lastIndexOf("}", bodyend - 2)
+        funcbody = funcsrc.substring(bodystart, bodyend + 1)
+        // Avoid redirecting through jitInvoke helper.
+        funcbody = funcbody.replace(/jitInvoke\(([0-9]+),/g, function(m, id) {
+          return "FUNCS[" + id + " & " + (funcTableSize-1) + "]("
+        })
+      }
       modsource += "function F" + id + funcbody + "\n";
     }
       modsource += "function jitInvoke(id, frame, label) {\n" +
