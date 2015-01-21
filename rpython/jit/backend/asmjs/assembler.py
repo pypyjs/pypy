@@ -654,10 +654,11 @@ class CompiledBlockASMJS(object):
         self.inputkinds = [HOLE] * len(inputargs)
         reflocs = []
         offset = 0
+        baseofs = self.cpu.get_baseofs_of_frame_field()
         for i in xrange(len(inputargs)):
             box = inputargs[i]
             typ = js.HeapType.from_box(box)
-            alignment = offset % typ.size
+            alignment = (baseofs + offset) % typ.size
             if alignment:
                 offset += typ.size - alignment
             self.inputlocs[i] = offset
@@ -930,12 +931,13 @@ class CompiledBlockASMJS(object):
 
     def _get_framelocs_from_kinds(self, kinds, offset=0):
         locations = [-1] * len(kinds)
+        baseofs = self.cpu.get_baseofs_of_frame_field()
         for i in xrange(len(kinds)):
             kind = kinds[i]
             if kind == HOLE:
                 continue
             typ = js.HeapType.from_kind(kind)
-            alignment = offset % typ.size
+            alignment = (baseofs + offset) % typ.size
             if alignment:
                 offset += typ.size - alignment
             locations[i] = offset
@@ -1153,13 +1155,14 @@ class CompiledBlockASMJS(object):
 
     def _get_frame_locations(self, arguments, offset=-1):
         """Allocate locations in the frame for all the given arguments."""
+        baseofs = self.cpu.get_baseofs_of_frame_field()
         locations = [-1] * len(arguments)
         if offset < 0:
             offset = self.forced_spill_frame_offset
         for i in xrange(len(arguments)):
             box = arguments[i]
             typ = js.HeapType.from_box(box)
-            alignment = offset % typ.size
+            alignment = (baseofs + offset) % typ.size
             if alignment:
                 offset += typ.size - alignment
             locations[i] = offset
@@ -1169,12 +1172,13 @@ class CompiledBlockASMJS(object):
         return locations
 
     def _genop_spill_to_frame(self, box, offset=-1):
+        baseofs = self.cpu.get_baseofs_of_frame_field()
         typ = js.HeapType.from_box(box)
         # Allocate it a position at the next available offset.
         # Align each value to a multiple of its size.
         if offset == -1:
             offset = self.spilled_frame_offset
-            alignment = offset % typ.size
+            alignment = (baseofs + offset) % typ.size
             if alignment:
                 offset += typ.size - alignment
         if offset + typ.size > self.spilled_frame_offset:
