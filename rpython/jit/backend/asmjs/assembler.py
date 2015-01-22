@@ -1854,6 +1854,8 @@ class CompiledBlockASMJS(object):
                 tempvars[i] = self.bldr.allocate_intvar()
             self.bldr.emit_assignment(tempvars[i], self._get_jsval(boxes[i]))
             # XXX TODO: don't create unnecessary tempvars, per code below.
+            # XXX TODO: we need to be careful if any suspended values for a box
+            # use other variables that will be overwritten.
             #box = boxes[i]
             #if not isinstance(box, Box):
             #    continue

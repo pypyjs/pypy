@@ -94,7 +94,8 @@ class EmscriptenPlatform(BasePosix):
       # For compiling with the JIT.
       # Emscripten is smart enough to pull in only the bits of code that it
       # needs here, so it's OK to list them all even if some are not used.
-      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
+      #"--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit_allinone.js"),
+      "--js-library", os.path.join(pypy_root_dir, "rpython/jit/backend/asmjs/library_jit.js"),
       "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_ffi.js"),
       "--js-library", os.path.join(pypy_root_dir, "rpython/translator/platform/emscripten_platform/library_emjs.js"),
       # Disable the use of a separate memory-initializer file.
