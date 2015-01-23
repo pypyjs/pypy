@@ -176,6 +176,17 @@ Float64 = HeapType(Doublish, "HF64", 3, True)
 #  output code, via a "ASMJSBuilder" object.
 
 
+def iter_variables(expr):
+    varlist = []
+    _gather_variables(expr, varlist)
+    return varlist
+
+
+def _gather_variables(expr, varlist):
+    if isinstance(expr, ASMJSValue):
+        expr._gather_variables(varlist)
+
+
 class ASMJSValue(AbstractValue):
     """An AbstractValue that knows how to render its own asmjs code."""
 
@@ -183,6 +194,9 @@ class ASMJSValue(AbstractValue):
 
     def emit_value(self, js):
         raise NotImplementedError
+
+    def _gather_variables(self, varlist):
+        pass
 
 
 class Variable(ASMJSValue):
@@ -193,6 +207,9 @@ class Variable(ASMJSValue):
 
     def emit_value(self, js):
         js.emit(self.varname)
+
+    def _gather_variables(self, varlist):
+        varlist.append(self)
 
 
 class IntVar(Variable):
@@ -272,6 +289,9 @@ class ASMJSUnaryOp(ASMJSValue):
         js.emit_value(self.operand)
         js.emit(")")
 
+    def _gather_variables(self, varlist):
+        _gather_variables(self.operand, varlist)
+
 
 class UPlus(ASMJSUnaryOp):
     """ASMJSValue representing unary plus."""
@@ -348,6 +368,10 @@ class ASMJSBinaryOp(ASMJSValue):
         js.emit("(")
         js.emit_value(self.rhs)
         js.emit(")")
+
+    def _gather_variables(self, varlist):
+        _gather_variables(self.lhs, varlist)
+        _gather_variables(self.rhs, varlist)
 
 
 class Plus(ASMJSBinaryOp):
@@ -653,6 +677,10 @@ class _CallFunc(ASMJSValue):
                             arg = SignedCast(arg)
             js.emit_value(arg)
         js.emit(")")
+
+    def _gather_variables(self, varlist):
+        for arg in self.arguments:
+            _gather_variables(arg, varlist)
 
 
 class CallFunc(_CallFunc):

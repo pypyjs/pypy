@@ -162,6 +162,7 @@ class EmscriptenPlatform(BasePosix):
             cflags.insert(1, incl)
         # Export only the entry-point functions, plus a few generally-useful
         # helper functions.
+        # XXX TODO: also need to export jitInvoke, maybe some emjs_* helpers.
         idx = ldflags.index("EXPORT_ALL=1")
         del ldflags[idx - 1 : idx + 1]
         exports = ("main", "free") + eci.export_symbols

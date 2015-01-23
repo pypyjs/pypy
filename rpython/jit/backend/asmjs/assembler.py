@@ -46,7 +46,7 @@ def reacquire_gil_shadowstack():
         after()
 
 
-# A one-word slot in memory that can be written to to invalidate jitted code.
+# A one-word slot in memory that can be written into to invalidate jitted code.
 # The code checks this flag in GUARD_NOT_INVALIDATED, in leiu of the ability
 # to patch the existing code.
 INVALIDATION = lltype.Struct(
@@ -1851,57 +1851,69 @@ class CompiledBlockASMJS(object):
         This uses temp variables as necessary so that it's possible to e.g.
         switch the contents of two varables as part of this operation.
         """
+        self.bldr.emit_comment("ASSIGNING TO %d VARS" % (len(boxes),))
         if kinds is None:
             kinds = [box.type if box else HOLE for box in boxes]
-        #swapvars = [None] * len(variables)
-        tempvars = [None] * len(variables)
-        # Find a non-output variable for each of the input boxes.
-        # This might involve a temporary variable if we're overwriting vars.
-        for i in range(len(variables)):
-            if kinds[i] == HOLE:
-                continue
+        # Each box may correspond to a suspended expression which in turn uses
+        # several other variables that are also being assigned to.
+        exprs = [self._get_jsval(box) for box in boxes]
+        deps = [{} for expr in exprs]
+        for i in range(len(exprs)):
+            for var in js.iter_variables(exprs[i]):
+                try:
+                    j = variables.index(var)
+                    if j != i:
+                        deps[j][i] = True
+                except ValueError:
+                    pass
+        # Now assign those expressions to the relevant variables, trying to do
+        # them in dependency order so that we avoid the need for temporary
+        # variables where possible.
+        seen = {}
+        temp = {}
+        for i in range(len(exprs)):
+            self._genop_assign_to_vars_in_dep_order(i, variables, kinds, exprs,
+                                                    deps, seen, temp)
+        if SANITYCHECK:
+            assert len(temp) == 0
+            assert len(seen) == len(exprs)
+            for i in range(len(seen)):
+                assert seen[i] == 2
+
+    def _genop_assign_to_vars_in_dep_order(self, i, vars, kinds, exprs, deps,
+                                           seen, temp):
+        status = seen.get(i, 0)
+        # If we've assigned that variable, there's nothing more to do.
+        if status == 2:
+            return
+        # If we've already seen this var, but have not yet assigned to it,
+        # then there's a dependency loop and we have to spill to a tempvar.
+        if status == 1:
             if kinds[i] == FLOAT:
-                tempvars[i] = self.bldr.allocate_doublevar()
+                temp[i] = self.bldr.allocate_doublevar()
             else:
-                tempvars[i] = self.bldr.allocate_intvar()
-            self.bldr.emit_assignment(tempvars[i], self._get_jsval(boxes[i]))
-            # XXX TODO: don't create unnecessary tempvars, per code below.
-            # XXX TODO: we need to be careful if any suspended values for a box
-            # use other variables that will be overwritten.
-            #box = boxes[i]
-            #if not isinstance(box, Box):
-            #    continue
-            #boxvar = self._genop_realize_box(box)
-            # Is this box currently in one of the output vars?
-            # If so then we'll need a temporary variable.
-            #for outvar in variables:
-            #    if not isinstance(outvar, js.Variable):
-            #        continue
-            #    assert isinstance(boxvar, js.Variable)
-            #    if outvar.varname == boxvar.varname:
-            #        if kinds[i] == FLOAT:
-            #            swapvars[i] = self.bldr.allocate_doublevar()
-            #            temp_doublevars.append(swapvars[i])
-            #        else:
-            #            swapvars[i] = self.bldr.allocate_intvar()
-            #            temp_intvars.append(swapvars[i])
-            #        self.bldr.emit_assignment(swapvars[i], boxvar)
-            #        break
-            #else:
-            #    swapvars[i] = boxvar
-        # Now assign each swapvar to the matching output variable.
-        for i in range(len(variables)):
-            if kinds[i] == HOLE:
-                continue
-            self.bldr.emit_assignment(variables[i], tempvars[i])
-            if kinds[i] == FLOAT:
-                self.bldr.free_doublevar(tempvars[i])
+                temp[i] = self.bldr.allocate_intvar()
+            self.bldr.emit_assignment(temp[i], exprs[i])
+            return
+        # Evaluate anything that depends on this variable before
+        # changing its value.
+        if kinds[i] != HOLE:
+            seen[i] = 1
+            for j in deps[i]:
+                self._genop_assign_to_vars_in_dep_order(j, vars, kinds, exprs,
+                                                        deps, seen, temp)
+            # If we spilled it to a tempvar, assign the value from there.
+            # Otherwise we can evaluate its expression directly.
+            if i not in temp:
+                if exprs[i] != vars[i]:
+                    self.bldr.emit_assignment(vars[i], exprs[i])
             else:
-                self.bldr.free_intvar(tempvars[i])
-        #for var in temp_intvars:
-        #    self.bldr.free_intvar(var)
-        #for var in temp_doublevars:
-        #    self.bldr.free_doublevar(var)
+                self.bldr.emit_assignment(vars[i], temp[i])
+                if kinds[i] == FLOAT:
+                    self.bldr.free_doublevar(temp.pop(i))
+                else:
+                    self.bldr.free_intvar(temp.pop(i))
+        seen[i] = 2
 
     def genop_guard_not_forced_2(self, op):
         # This is a special "guard" that is not really a guard, and

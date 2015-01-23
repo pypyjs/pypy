@@ -9,10 +9,10 @@ from rpython.jit.backend.asmjs.arch import SANITYCHECK
 
 class ASMJSFragment(object):
 
-    def __init__(self, source, intvars, doublevars, functions):
+    def __init__(self, source, num_intvars, num_doublevars, functions):
         self.source = source
-        self.all_intvars = intvars
-        self.all_doublevars = doublevars
+        self.num_intvars = num_intvars
+        self.num_doublevars = num_doublevars
         self.imported_functions = functions
 
 
@@ -22,8 +22,8 @@ class ASMJSBuilder(object):
     def __init__(self, cpu):
         self.cpu = cpu
         self.source_chunks = []
-        self.all_intvars = {}
-        self.all_doublevars = {}
+        self.all_intvars = []
+        self.all_doublevars = []
         self.free_intvars = []
         self.free_doublevars = []
         self.imported_functions = {}
@@ -57,11 +57,10 @@ class ASMJSBuilder(object):
         chunks.append('function F(frame, label){\n')
         chunks.append('frame=frame|0;\n')
         chunks.append('label=label|0;\n')
-        for varname, init_int in self.all_intvars.iteritems():
-            chunks.append("var %s=%d;\n" % (varname, init_int))
-        for varname, init_double in self.all_doublevars.iteritems():
-            assert "." in ("%f" % (init_double,))
-            chunks.append("var %s=%f;\n" % (varname, init_double))
+        for var in self.all_intvars:
+            chunks.append("var %s=0;\n" % (var.varname,))
+        for var in self.all_doublevars:
+            chunks.append("var %s=0.0;\n" % (var.varname,))
         return chunks
 
     def _build_epilog(self):
@@ -82,19 +81,18 @@ class ASMJSBuilder(object):
         allocated and emitted.
         """
         if num < 0 and len(self.free_intvars) > 0:
-            varname = self.free_intvars.pop()
+            var = self.free_intvars.pop()
         else:
             if num < 0:
                 num = len(self.all_intvars)
-                varname = "i%d" % (num,)
-            else:
-                varname = "i%d" % (num,)
-                try:
-                    self.free_intvars.remove(varname)
-                except ValueError:
-                    pass
-            self.all_intvars[varname] = 0
-        return jsval.IntVar(varname)
+            for x in range(len(self.all_intvars), num + 1):
+                self.all_intvars.append(jsval.IntVar("i%d" % (x,)))
+            var = self.all_intvars[num]
+            try:
+                self.free_intvars.remove(var)
+            except ValueError:
+                pass
+        return var
 
     def allocate_doublevar(self, num=-1):
         """Allocate a variable of type double.
@@ -104,29 +102,28 @@ class ASMJSBuilder(object):
         allocated and emitted.
         """
         if num < 0 and len(self.free_doublevars) > 0:
-            varname = self.free_doublevars.pop()
+            var = self.free_doublevars.pop()
         else:
             if num < 0:
                 num = len(self.all_doublevars)
-                varname = "f%d" % (num,)
-            else:
-                varname = "f%d" % (num,)
-                try:
-                    self.free_doublevars.remove(varname)
-                except ValueError:
-                    pass
-            self.all_doublevars[varname] = 0.0
-        return jsval.DoubleVar(varname)
+            for x in range(len(self.all_doublevars), num + 1):
+                self.all_doublevars.append(jsval.DoubleVar("f%d" % (x,)))
+            var = self.all_doublevars[num]
+            try:
+                self.free_doublevars.remove(var)
+            except ValueError:
+                pass
+        return var
 
     def free_intvar(self, var):
         """Free up the given int variable for future re-use."""
         assert isinstance(var, jsval.IntVar)
-        self.free_intvars.append(var.varname)
+        self.free_intvars.append(var)
 
     def free_doublevar(self, var):
         """Free up the given double variable for future re-use."""
         assert isinstance(var, jsval.DoubleVar)
-        self.free_doublevars.append(var.varname)
+        self.free_doublevars.append(var)
 
     def emit(self, code):
         """Emit the given string directly into the generated code."""
@@ -316,13 +313,16 @@ class ASMJSBuilder(object):
 
     def emit_fragment(self, fragment):
         self.source_chunks.append(fragment.source)
-        self.all_intvars.update(fragment.all_intvars)
-        self.all_doublevars.update(fragment.all_doublevars)
+        for x in range(len(self.all_intvars), fragment.num_intvars):
+            self.all_intvars.append(jsval.IntVar("i%d" % (x,)))
+        for x in range(len(self.all_doublevars), fragment.num_doublevars):
+            self.all_doublevars.append(jsval.DoubleVar("f%d" % (x,)))
         self.imported_functions.update(fragment.imported_functions)
 
     def capture_fragment(self):
         fragment = ASMJSFragment("".join(self.source_chunks),
-                                 self.all_intvars, self.all_doublevars,
+                                 len(self.all_intvars),
+                                 len(self.all_doublevars),
                                  self.imported_functions)
         del self.source_chunks[:]
         return fragment
