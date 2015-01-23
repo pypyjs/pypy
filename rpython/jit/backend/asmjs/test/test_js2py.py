@@ -91,6 +91,7 @@ def execute_js(jssrc):
 class TestJSToPythonConversion(unittest.TestCase):
 
     def _perform_integer_operations(self):
+        raise unittest.SkipTest
         r = random.Random()
         for _ in xrange(100):
             seed = r.uniform(0, 1000)

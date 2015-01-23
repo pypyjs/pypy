@@ -1,5 +1,6 @@
 
 import os
+import time
 
 from rpython.rlib import rgc
 from rpython.rlib.rarithmetic import r_uint, intmask
@@ -99,6 +100,7 @@ class AssemblerASMJS(object):
 
     def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace."""
+        #os.write(2, "ASSEMBLE LOOP START %f\n" % (time.time(),))
         # Build a new func holding this new loop.
         func = CompiledFuncASMJS(self)
         clt = CompiledLoopTokenASMJS(self, func, looptoken.number)
@@ -120,10 +122,12 @@ class AssemblerASMJS(object):
                 func.reassemble()
             else:
                 target_block.clt.func.merge_with(func)
+        #os.write(2, "ASSEMBLE LOOP END %f\n" % (time.time(),))
 
     def assemble_bridge(self, faildescr, inputargs, operations,
                         original_loop_token, log):
         """Assemble, compile and link a new bridge from the given trace."""
+        #os.write(2, "ASSEMBLE BRIDGE START %f\n" % (time.time(),))
         assert isinstance(faildescr, AbstractFailDescr)
         # Merge the new operations into the existing loop.
         self.setup(original_loop_token)
@@ -143,8 +147,10 @@ class AssemblerASMJS(object):
                 clt.func.reassemble()
             else:
                 target_block.clt.func.merge_with(clt.func)
+        #os.write(2, "ASSEMBLE BRIDGE END %f\n" % (time.time(),))
 
     def redirect_call_assembler(self, oldlooptoken, newlooptoken):
+        #os.write(2, "ASSEMBLE REDIRECT START %f\n" % (time.time(),))
         oldclt = oldlooptoken.compiled_loop_token
         newclt = newlooptoken.compiled_loop_token
         oldclt.redirect_loop(newclt)
@@ -152,6 +158,7 @@ class AssemblerASMJS(object):
             oldclt.func.reassemble()
         else:
             newclt.func.merge_with(oldclt.func)
+        #os.write(2, "ASSEMBLE REDIRECT END %f\n" % (time.time(),))
 
     def free_loop_and_bridges(self, compiled_loop_token):
         # All freeing is taken care of in the various destructors.
@@ -326,6 +333,7 @@ class CompiledFuncASMJS(object):
             # Generate the relooped body from all loop blocks.
             # XXX TODO: find a way to avoid re-doing all this work
             # each time we add a new block.
+            #os.write(2, "ASSEMBLER RELOOP START %f\n" % (time.time(),))
             blocks = {}
             entries = []
             for clt in self.compiled_loops:
@@ -336,15 +344,18 @@ class CompiledFuncASMJS(object):
             self.reloop_state = []
             self.emit_relooped_blocks(bldr, entries, blocks)
             self.reloop_state = None
+            #os.write(2, "ASSEMBLER RELOOP END %f\n" % (time.time(),))
             # Always exit by returning the frame.
             bldr.emit_exit()
 
         # Compile the replacement source code for our function.
         jssrc = bldr.finish()
-        #os.write(2, "=-=-=-= COMPILED\n")
-        #os.write(2, jssrc)
-        #os.write(2, "\n=-=-=-=-=-=-=-=-\n")
+        os.write(2, "=-=-=-= COMPILED\n")
+        os.write(2, jssrc)
+        os.write(2, "\n=-=-=-=-=-=-=-=-\n")
+        #os.write(2, "ASSEMBLER COMPILE START %f\n" % (time.time(),))
         support.jitRecompile(self.compiled_funcid, jssrc)
+        #os.write(2, "ASSEMBLER COMPILE END %f\n" % (time.time(),))
 
     def emit_relooped_blocks(self, bldr, entries, blocks):
         if not entries:
@@ -793,6 +804,7 @@ class CompiledBlockASMJS(object):
         else:
             # If there might be an exception, capture it to the frame.
             if faildescr._asmjs_hasexc:
+                bldr.emit_comment("PRESERVE EXCEPTION INFO")
                 pos_exctyp = js.ConstInt(self.cpu.pos_exception())
                 pos_excval = js.ConstInt(self.cpu.pos_exc_value())
                 exctyp = js.HeapData(js.Int32, pos_exctyp)
