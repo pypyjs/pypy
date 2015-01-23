@@ -350,9 +350,9 @@ class CompiledFuncASMJS(object):
 
         # Compile the replacement source code for our function.
         jssrc = bldr.finish()
-        os.write(2, "=-=-=-= COMPILED\n")
-        os.write(2, jssrc)
-        os.write(2, "\n=-=-=-=-=-=-=-=-\n")
+        #os.write(2, "=-=-=-= COMPILED\n")
+        #os.write(2, jssrc)
+        #os.write(2, "\n=-=-=-=-=-=-=-=-\n")
         #os.write(2, "ASSEMBLER COMPILE START %f\n" % (time.time(),))
         support.jitRecompile(self.compiled_funcid, jssrc)
         #os.write(2, "ASSEMBLER COMPILE END %f\n" % (time.time(),))
@@ -720,7 +720,10 @@ class CompiledBlockASMJS(object):
         self.spilled_frame_values = {}
         self.spilled_frame_offset = 0
         self.forced_spill_frame_offset = 0
-        self.box_to_jsval = {}
+        self.box_variables = {}
+        self.box_expressions = {}
+        self.box_expression_graveyard = {}
+        self.box_variable_refcounts = {}
 
     def __del__(self):
         for gcmap in self.allocated_gcmaps:
@@ -986,14 +989,26 @@ class CompiledBlockASMJS(object):
         for i in xrange(len(self.inputargs)):
             box = self.inputargs[i]
             if box:
-                self.box_to_jsval[box] = inputvars[i]
+                self.box_variables[box] = inputvars[i]
+                self.box_variable_refcounts[inputvars[i]] = 1
         # Walk the list of operations, emitting code for each.
         # We expend some modest effort to generate "nice" javascript code,
         # by e.g. folding constant expressions and eliminating temp variables.
+        #os.write(2, "====\n")
+        #for i in xrange(len(self.inputargs)):
+        #    os.write(2, "INPUT %d: %s\n" % (i, self.inputargs[i]))
+        #for i in xrange(len(self.operations)):
+        #    self._print_op(self.operations[i])
+        #os.write(2, "====\n")
         self.pos = 0
         while self.pos < len(self.operations):
             op = self.operations[self.pos]
             step = 1
+            # Flush any suspended expressions that would be invalidated by this
+            # op. XXX TODO: more nuanced detection of what would be invalidated.
+            if not (op.has_no_side_effect() or op.is_guard()):
+                for box in self.box_expressions.keys():
+                    self._genop_flush_box(box)
             # Is it one of the special test-only opcodes?
             if not we_are_translated() and op.getopnum() == -124:
                 self.genop_force_spill(op)
@@ -1016,28 +1031,23 @@ class CompiledBlockASMJS(object):
                 self.bldr.emit_comment("BEGIN JIT OP: %s" % (op,))
                 genop_list[op.getopnum()](self, op)
             # It's just a simple expression.
-            # Maybe we can fold it into the next op?
+            # Maybe we can suspend it and fold it into a later expression?
             else:
                 self.bldr.emit_comment("BEGIN JIT EXPR OP: %s" % (op,))
                 expr = genop_expr_list[op.getopnum()](self, op)
-                # XXX TODO: this causes test_caching_setfield to fail.
-                # It frees up any boxes used in the expr, which can then
-                # be re-used in e.g. label shuffling, and overwrite the
-                # original values.
-                #if self._is_final_use(op.result, self.pos + 1):
-                #    if SANITYCHECK:
-                #        assert op.result not in self.box_to_jsval
-                #    self.box_to_jsval[op.result] = expr
-                #    self.bldr.emit_comment("FOLDED JIT EXPR OP")
-                #else:
-                boxvar = self._get_jsval(op.result)
-                self.bldr.emit_assignment(boxvar, expr)
+                if self._can_suspend_box(op.result):
+                     self._suspend_box_expression(op.result, expr)
+                     self.bldr.emit_comment("SUSPENDED JIT EXPR OP")
+                else:
+                    boxvar = self._allocate_box_variable(op.result)
+                    self.bldr.emit_assignment(boxvar, expr)
             # Free vars for boxes that are no longer needed.
-            # XXX TODO: need to free boxes from the guard, if any.
-            for j in range(op.numargs()):
-                self._maybe_free_boxvar(op.getarg(j))
-            self._maybe_free_boxvar(op.result)
             self.pos += step
+            for i in xrange(self.pos - step, self.pos):
+                op = self.operations[i]
+                for j in range(op.numargs()):
+                    self._maybe_free_boxvar(op.getarg(j))
+                self._maybe_free_boxvar(op.result)
 
         # Capture the final fragment.
         fragment = self.bldr.capture_fragment()
@@ -1052,42 +1062,138 @@ class CompiledBlockASMJS(object):
         self.spilled_frame_values = None
         self.spilled_frame_offset = 0
         self.forced_spill_frame_offset = 0
-        self.box_to_jsval = None
+        self.box_variables = None
+        self.box_expressions = None
+        self.box_expression_graveyard = None
+        self.box_variable_refcounts = None
+
+    #
+    # Methods for dealing with boxes and their values.
+    # It's a little complicated because we can "suspend" box expressions
+    # in the hopes of folding them into some later expression.
+    #
+
+    def _can_suspend_box(self, box):
+        # XXX TODO: more general suspension mechanism, rather than
+        # just "is used once, immediately in the next op".
+        if not self._is_final_use(box, self.pos + 1):
+            return False
+        count = 0
+        next_op = self.operations[self.pos + 1]
+        for i in xrange(next_op.numargs()):
+            if next_op.getarg(i) == box:
+                count += 1
+                if count > 1:
+                    return False
+        if next_op.is_guard():
+            for arg in next_op.getfailargs():
+                if arg == box:
+                    count += 1
+                    if count > 1:
+                        return False
+        return True
+
+    def _suspend_box_expression(self, box, expr):
+        #print "SUSPENDING BOX", box, "; EXPR =", expr
+        if SANITYCHECK:
+            assert box not in self.box_variables
+            assert box not in self.box_expressions
+        for var in self._iter_box_variables(expr):
+            self.box_variable_refcounts[var] += 1
+        self.box_expressions[box] = expr
+
+    def _iter_box_variables(self, expr):
+        for var in js.iter_variables(expr):
+            if var == js.frame:
+                continue
+            assert var in self.box_variable_refcounts
+            yield var
 
     def _get_jsval(self, jitval):
         if isinstance(jitval, Box):
             try:
-                return self.box_to_jsval[jitval]
+                return self.box_variables[jitval]
             except KeyError:
-                if jitval.type == FLOAT:
-                    jsval = self.bldr.allocate_doublevar()
-                else:
-                    jsval = self.bldr.allocate_intvar()
-                self.box_to_jsval[jitval] = jsval
-                return jsval
+                try:
+                    boxexpr = self.box_expressions.pop(jitval)
+                    self.box_expression_graveyard[jitval] = boxexpr
+                    return boxexpr
+                except KeyError:
+                    #os.write(2, "UNINITIAlIZED BOX: %s\n" % (jitval,))
+                    #if jitval in self.box_expression_graveyard:
+                    #    os.write(2, "  BOX EXPR WAS ALREADY CONSUMED\n")
+                    raise ValueError("Uninitialized box")
         return jitval
+
+    def _allocate_box_variable(self, box):
+        assert isinstance(box, Box)
+        assert box not in self.box_variables
+        if box.type == FLOAT:
+            boxvar = self.bldr.allocate_doublevar()
+        else:
+            boxvar = self.bldr.allocate_intvar()
+        self.box_variables[box] = boxvar
+        self.box_variable_refcounts[boxvar] = 1
+        return boxvar
+
+    def _genop_flush_box(self, box):
+        if not isinstance(box, Box):
+            return box
+        boxvar = self.box_variables.get(box, None)
+        if boxvar is None:
+            boxexpr = self._get_jsval(box)
+            self.bldr.emit_comment("FLUSH SUSPENDED BOX")
+            boxvar = self._allocate_box_variable(box)
+            self.bldr.emit_assignment(boxvar, boxexpr)
+        return boxvar
 
     def _is_final_use(self, box, i):
         if box is None or not isinstance(box, Box):
             return False
         assert isinstance(box, Box)
         if box not in self.longevity:
-            return False
-        return self.longevity[box][1] == i
+            return True
+        return self.longevity[box][1] <= i
 
     def _maybe_free_boxvar(self, box):
-        if isinstance(box, Box):
-            if self._is_final_use(box, self.pos) or box not in self.longevity:
-                # Here we are happy to pop inputarg boxes from the dict,
-                # as it means we don't have to keep them alive.  But we
-                # must not free the underlying js variables.
-                boxvar = self.box_to_jsval.pop(box, None)
-                if box not in self.inputargs:
-                    if boxvar is not None and boxvar != js.frame:
-                        if isinstance(boxvar, js.IntVar):
-                            self.bldr.free_intvar(boxvar)
-                        elif isinstance(boxvar, js.DoubleVar):
-                            self.bldr.free_doublevar(boxvar)
+        if not isinstance(box, Box):
+            return
+        if not self._is_final_use(box, self.pos - 1):
+            return
+        # The box can be freed.  Clean up any suspended expressions,
+        # which may in turn free additional variables.
+        if SANITYCHECK:
+            assert box not in self.box_expressions
+        boxvar = self.box_variables.pop(box, None)
+        if boxvar is not None:
+            self.box_variable_refcounts[boxvar] -= 1
+            if self.box_variable_refcounts[boxvar] == 0:
+                self._free_boxvar(boxvar)
+        boxexpr = self.box_expression_graveyard.pop(box, None)
+        if boxexpr is not None:
+            for var in self._iter_box_variables(boxexpr):
+                self.box_variable_refcounts[var] -= 1
+                if self.box_variable_refcounts[var] == 0:
+                    self._free_boxvar(var)
+
+    def _free_boxvar(self, var):
+        # We must not free the variables for our inputargs,
+        # XXX TODO: I no longer recall what badness happens
+        # if we free input vars...
+        assert isinstance(var, js.Variable)
+        refcount = self.box_variable_refcounts.pop(var)
+        if SANITYCHECK:
+            assert refcount == 0
+        if var not in self.inputargs:
+            assert var != js.frame
+            if isinstance(var, js.IntVar):
+                self.bldr.free_intvar(var)
+            elif isinstance(var, js.DoubleVar):
+                self.bldr.free_doublevar(var)
+
+    #
+    # Methods for checking various properties of an opcode.
+    #
 
     @staticmethod
     def _op_needs_guard(op):
@@ -1135,17 +1241,6 @@ class CompiledBlockASMJS(object):
             if op.getopnum() == rop.GETARRAYITEM_RAW_PURE:
                 return False
         return True
-
-    def _genop_realize_box(self, box):
-        if not isinstance(box, Box):
-            return box
-        boxexpr = self._get_jsval(box)
-        if isinstance(boxexpr, js.Variable):
-            return boxexpr
-        del self.box_to_jsval[box]
-        boxvar = self._get_jsval(box)
-        self.bldr.emit_assignment(boxvar, boxexpr)
-        return boxvar
 
     def _genop_write_output_args(self, outputargs, locations=None):
         if locations is None:
@@ -1198,7 +1293,7 @@ class CompiledBlockASMJS(object):
         # Generate code to write the value into the frame.
         addr = js.FrameSlotAddr(offset)
         if isinstance(box, Box):
-            boxexpr = self._genop_realize_box(box)
+            boxexpr = self._genop_flush_box(box)
         else:
             boxexpr = self._get_jsval(box)
         self.bldr.emit_store(boxexpr, addr, typ)
@@ -1316,7 +1411,8 @@ class CompiledBlockASMJS(object):
         offset, fieldsize, signed = unpack_fielddescr(op.getdescr())
         addr = js.Plus(base, js.ConstInt(offset))
         typ = js.HeapType.from_size_and_sign(fieldsize, signed)
-        self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
+        boxvar = self._allocate_box_variable(op.result)
+        self.bldr.emit_load(boxvar, addr, typ)
 
     genop_getfield_raw = genop_getfield_gc
     genop_getfield_gc_pure = genop_getfield_gc
@@ -1351,7 +1447,8 @@ class CompiledBlockASMJS(object):
         addr = js.Plus(base, js.Plus(js.ConstInt(offset),
                                      js.IMul(which, js.ConstInt(itemsize))))
         typ = js.HeapType.from_size_and_sign(fieldsize, signed)
-        self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
+        boxvar = self._allocate_box_variable(op.result)
+        self.bldr.emit_load(boxvar, addr, typ)
 
     def genop_setinteriorfield_gc(self, op):
         t = unpack_interiorfielddescr(op.getdescr())
@@ -1381,7 +1478,8 @@ class CompiledBlockASMJS(object):
         addr = js.Plus(base, js.Plus(js.ConstInt(offset),
                                      js.IMul(which, js.ConstInt(itemsize))))
         typ = js.HeapType.from_size_and_sign(itemsize, signed)
-        self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
+        boxvar = self._allocate_box_variable(op.result)
+        self.bldr.emit_load(boxvar, addr, typ)
 
     genop_getarrayitem_gc_pure = genop_getarrayitem_gc
     genop_getarrayitem_raw = genop_getarrayitem_gc
@@ -1393,7 +1491,8 @@ class CompiledBlockASMJS(object):
         which = self._get_jsval(op.getarg(1))
         addr = js.Plus(base, js.Plus(js.ConstInt(offset), which))
         typ = js.HeapType.from_size_and_sign(itemsize, signed)
-        self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
+        boxvar = self._allocate_box_variable(op.result)
+        self.bldr.emit_load(boxvar, addr, typ)
 
     def genop_expr_getarrayitem_gc_pure(self, op):
         itemsize, offset, signed = unpack_arraydescr(op.getdescr())
@@ -1485,9 +1584,9 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_add_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
-        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
-        res = self._get_jsval(op.result)
+        lhs = self._genop_flush_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_flush_box(self._get_jsval(op.getarg(1)))
+        res = self._allocate_box_variable(op.result)
         self.bldr.emit_assignment(res, js.SignedCast(js.Plus(lhs, rhs)))
         did_overflow = js.Or(js.And(js.GreaterThanEq(lhs, js.zero),
                                     js.LessThan(res, rhs)),
@@ -1503,9 +1602,9 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_sub_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
-        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
-        res = self._get_jsval(op.result)
+        lhs = self._genop_flush_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_flush_box(self._get_jsval(op.getarg(1)))
+        res = self._allocate_box_variable(op.result)
         self.bldr.emit_assignment(res, js.SignedCast(js.Minus(lhs, rhs)))
         did_overflow = js.Or(js.And(js.GreaterThanEq(rhs, js.zero),
                                     js.GreaterThan(res, lhs)),
@@ -1521,9 +1620,9 @@ class CompiledBlockASMJS(object):
     def genop_withguard_int_mul_ovf(self, op, guardop):
         if SANITYCHECK:
             assert guardop.is_guard_overflow()
-        lhs = self._genop_realize_box(self._get_jsval(op.getarg(0)))
-        rhs = self._genop_realize_box(self._get_jsval(op.getarg(1)))
-        res = self._get_jsval(op.result)
+        lhs = self._genop_flush_box(self._get_jsval(op.getarg(0)))
+        rhs = self._genop_flush_box(self._get_jsval(op.getarg(1)))
+        res = self._allocate_box_variable(op.result)
         # To check for overflow in the general case, we have to perform the
         # multiplication twice - once as double and once as an int, then
         # check whether they are equal.
@@ -1545,8 +1644,8 @@ class CompiledBlockASMJS(object):
         arg = self._get_jsval(argbox)
         if isinstance(argbox, Box):
             if not isinstance(arg, js.Variable):
-                arg = self._genop_realize_box(argbox)
-        resvar = self._get_jsval(op.result)
+                arg = self._genop_flush_box(argbox)
+        resvar = self._allocate_box_variable(op.result)
         with self.bldr.emit_if_block(js.LessThan(arg, js.zero)):
             self.bldr.emit_assignment(resvar, js.zero)
         with self.bldr.emit_else_block():
@@ -1575,8 +1674,8 @@ class CompiledBlockASMJS(object):
         arg = self._get_jsval(argbox)
         if isinstance(argbox, Box):
             if not isinstance(arg, js.Variable):
-                arg = self._genop_realize_box(argbox)
-        resvar = self._get_jsval(op.result)
+                arg = self._genop_flush_box(argbox)
+        resvar = self._allocate_box_variable(op.result)
         zero = js.ConstFloat(longlong.getfloatstorage(0.0))
         with self.bldr.emit_if_block(js.LessThan(arg, zero)):
             self.bldr.emit_assignment(resvar, js.UMinus(arg))
@@ -1629,7 +1728,8 @@ class CompiledBlockASMJS(object):
         micros = js.HeapData(js.Int32, js.FrameSlotAddr(WORD))
         millis = js.Div(micros, js.ConstInt(1000))
         millis = js.Plus(millis, js.IMul(secs, js.ConstInt(1000)))
-        self.bldr.emit_assignment(self._get_jsval(op.result), millis)
+        boxvar = self._allocate_box_variable(op.result)
+        self.bldr.emit_assignment(boxvar, millis)
 
     #
     # Calls and Jumps and Exits, Oh My!
@@ -1665,7 +1765,7 @@ class CompiledBlockASMJS(object):
             args.append(self._get_jsval(op.getarg(i)))
             i += 1
         self._genop_call(op, descr, addr, args)
-        resvar = self._get_jsval(op.result)
+        resvar = self.box_variables[op.result]
         with self.bldr.emit_if_block(js.Equal(resvar, js.zero)):
             self._genop_propagate_exception()
 
@@ -1775,7 +1875,8 @@ class CompiledBlockASMJS(object):
                     offset = cpu.unpack_arraydescr(descr)
                     addr = js.Plus(resvar, js.ConstInt(offset))
                     typ = js.HeapType.from_kind(kind)
-                    self.bldr.emit_load(self._get_jsval(op.result), addr, typ)
+                    boxvar = self._allocate_box_variable(op.result)
+                    self.bldr.emit_load(boxvar, addr, typ)
             # If not, then we need to invoke a helper function.
             with self.bldr.emit_else_block():
                 if op.result is None:
@@ -1792,7 +1893,7 @@ class CompiledBlockASMJS(object):
                     if op.result is None:
                         self.bldr.emit_expr(call)
                     else:
-                        opresvar = self._get_jsval(op.result)
+                        opresvar = self.box_variables[op.result]
                         self.bldr.emit_assignment(opresvar, call)
             # Cleanup.
             self.bldr.free_intvar(resvar)
@@ -1818,17 +1919,22 @@ class CompiledBlockASMJS(object):
                     result_sign = descr.is_result_signed()
                     call = js.SignedCast(call)
                     call = js.cast_integer(call, result_size, result_sign)
-                self.bldr.emit_assignment(self._get_jsval(op.result), call)
+                boxvar = self._allocate_box_variable(op.result)
+                self.bldr.emit_assignment(boxvar, call)
 
     def _genop_math_sqrt(self, op):
         assert op.numargs() == 2
         arg = js.DoubleCast(self._get_jsval(op.getarg(1)))
-        res = self._get_jsval(op.result)
+        res = self._allocate_box_variable(op.result)
         self.bldr.emit_assignment(res, js.CallFunc("sqrt", [arg]))
 
     def genop_force_token(self, op):
         if op.result is not None:
-            self.box_to_jsval[op.result] = js.frame
+            if self._can_suspend_box(op.result):
+                self._suspend_box_expression(op.result, js.frame)
+            else:
+                boxvar = self._allocate_box_variable(op.result)
+                self.bldr.emit_assignment(boxvar, js.frame)
 
     def genop_jump(self, op):
         # Generate the final jump, if any.
@@ -1934,8 +2040,10 @@ class CompiledBlockASMJS(object):
         for i in xrange(len(failargs)):
             failarg = failargs[i]
             # Careful, some boxes may not have a value yet.
-            if failarg and failarg not in self.box_to_jsval:
-                continue
+            if failarg:
+                if failarg not in self.box_variables:
+                    if failarg not in self.box_expressions:
+                        continue
             self._genop_spill_to_frame(failarg, faillocs[i])
         # The subsequent FINISH will store the necessary gcmap.
         self._prepare_guard_op(op, faillocs)
@@ -2021,7 +2129,8 @@ class CompiledBlockASMJS(object):
         test = js.NotEqual(exctyp, self._get_jsval(op.getarg(0)))
         self._genop_guard_failure(test, op)
         if op.result is not None:
-            self.bldr.emit_assignment(self._get_jsval(op.result), excval)
+            boxvar = self._allocate_box_variable(op.result)
+            self.bldr.emit_assignment(boxvar, excval)
         self.bldr.emit_store(js.zero, pos_exctyp, js.Int32)
         self.bldr.emit_store(js.zero, pos_excval, js.Int32)
 
@@ -2133,7 +2242,7 @@ class CompiledBlockASMJS(object):
         sizevar = self._get_jsval(sizebox)
         if isinstance(sizebox, Box):
             if not isinstance(sizevar, js.Variable):
-                sizevar = self._genop_realize_box(sizebox)
+                sizevar = self._genop_flush_box(sizebox)
         sizevar = self._emit_round_up_for_allocation(sizevar)
         # This is essentially an in-lining of MiniMark.malloc_fixedsize_clear()
         nfree_addr = js.ConstInt(gc_ll_descr.get_nursery_free_addr())
@@ -2141,7 +2250,7 @@ class CompiledBlockASMJS(object):
         nfree = js.HeapData(js.Int32, nfree_addr)
         ntop = js.HeapData(js.Int32, ntop_addr)
         # Optimistically, we can just use the space at nursery_free.
-        resvar = self._get_jsval(op.result)
+        resvar = self._allocate_box_variable(op.result)
         self.bldr.emit_assignment(resvar, nfree)
         new_nfree = self.bldr.allocate_intvar()
         self.bldr.emit_assignment(new_nfree, js.Plus(resvar, sizevar))
@@ -2177,7 +2286,7 @@ class CompiledBlockASMJS(object):
         itemsize = op.getarg(1).getint()
         lengthbox = op.getarg(2)
         assert isinstance(lengthbox, BoxInt)
-        lengthvar = self._genop_realize_box(lengthbox)
+        lengthvar = self._genop_flush_box(lengthbox)
         # Figure out the total size to be allocated.
         # It's gcheader + basesize + length*itemsize, maybe with some padding.
         if hasattr(gc_ll_descr, 'gcheaderbuilder'):
@@ -2197,7 +2306,7 @@ class CompiledBlockASMJS(object):
         ntop = js.HeapData(js.Int32, ntop_addr)
         maxsize = js.ConstInt(gc_ll_descr.max_size_of_young_obj - WORD * 2)
         # Optimistically, we can just use the space at nursery_free.
-        resvar = self._get_jsval(op.result)
+        resvar = self._allocate_box_variable(op.result)
         self.bldr.emit_assignment(resvar, nfree)
         new_nfree = self.bldr.allocate_intvar()
         self.bldr.emit_assignment(new_nfree, js.Plus(resvar, totalsize))
@@ -2290,6 +2399,7 @@ class CompiledBlockASMJS(object):
     def genop_force_spill(self, op):
         # This is used by tests.
         # The item will stay spilled to the frame forever.
+        self.bldr.emit_comment("FORCE SPILL: %s" % (op,))
         self._genop_spill_to_frame(op.getarg(0))
         self.forced_spill_frame_offset = self.spilled_frame_offset
 
@@ -2306,10 +2416,10 @@ class CompiledBlockASMJS(object):
         raise NotImplementedError
 
     def _print_op(self, op):
-        print "OPERATION:", op
+        os.write(2, "OPERATION: %s\n" % (op,))
         for i in range(op.numargs()):
-            print "  ARG:", op.getarg(i)
-        print "  RES:", op.result
+            os.write(2, "  ARG: %s\n" % (op.getarg(i),))
+        os.write(2, "  RES: %s\n" % (op.result,))
 
 
 class ctx_spill_to_frame(object):
@@ -2376,8 +2486,10 @@ class ctx_guard_not_forced(ctx_spill_to_frame):
         for i in xrange(len(failargs)):
             failarg = failargs[i]
             # Careful, some boxes may not have a value yet.
-            if failarg and failarg not in self.block.box_to_jsval:
-                continue
+            if failarg:
+                if failarg not in self.block.box_variables:
+                    if failarg not in self.block.box_expressions:
+                        continue
             self.genop_spill_to_frame(failarg, self.faillocs[i])
         # Note that we don't need to store a gcmap here.
         # That will be taken care of by the enclosed call operation.
@@ -2460,10 +2572,16 @@ class ctx_allow_gc(ctx_spill_to_frame):
         # Some tests expect boxes to be spilled in order of use.
         # We fake it by ordering them lexicographically by name.
         if we_are_translated():
-            for item in self.block.box_to_jsval.iteritems():
+            for item in self.block.box_variables.iteritems():
                 yield item
+            for item in self.block.box_expressions.iteritems():
+                if item[0] not in self.block.box_variables:
+                    yield item
         else:
-            items = list(self.block.box_to_jsval.iteritems())
+            items = list(self.block.box_variables.iteritems())
+            for item in self.block.box_expressions.iteritems():
+                if item[0] not in self.block.box_variables:
+                    items.append(item)
             items.sort(key=lambda i: str(i[0]))
             for item in items:
                 yield item
