@@ -16,6 +16,7 @@ var LibraryJIT = {
   //
   jitCompile__deps: ['jitReserve', 'jitRecompile'],
   jitCompile: function(addr) {
+    debug("jitCompile");
     addr = addr|0;
     var id = _jitReserve()|0;
     return _jitRecompile(id, addr);
@@ -31,6 +32,7 @@ var LibraryJIT = {
   //  zero.
   //
   jitReserve: function() {
+    debug("jitReserve");
     if (!Module._jitCompiledFunctions) {
       // We never allocate a function ID of zero.
       // In theory we could use zero to report compilation failure, but
@@ -46,6 +48,7 @@ var LibraryJIT = {
   //  Check if a compiled function exists with given id.
   //
   jitExists: function(id) {
+    debug("jitExists");
     id = id|0;
     if (!Module._jitCompiledFunctions) {
       return 0;
@@ -66,16 +69,20 @@ var LibraryJIT = {
   //  to jitInvoke to invoke the newly-compiled function.
   //  
   jitRecompile: function(id, addr) {
+    debug("jitRecompile");
     id = id|0;
     addr = addr|0;
     // Read js source from the heap, as a C-style string.
+    debug("jitRecompile", "reading source chars", id, addr);
     var sourceChars = [];
     var i = addr;
     while (HEAP8[i] != 0) {
+      debug("jitRecompile", "HEAP8[i]", HEAP8, i, HEAP8[i]);
       sourceChars.push(String.fromCharCode(HEAP8[i]));
       i++;
     }
     var source = sourceChars.join("");
+    debug("jitRecompile", "compiling source code");
     // Compile it into an asmjs linkable function, and link it.
     var mkfunc = new Function("return (" + source + ")");
     var stdlib = {
@@ -95,13 +102,16 @@ var LibraryJIT = {
       }
       Module.tempDoublePtr = tempDoublePtr;
     }
+    debug("jitRecompile", "building function");
     Module._jitCompiledFunctions[id] = mkfunc()(stdlib, Module, buffer);
+    debug("jitRecompile", "done");
     return id
   },
 
   // Copy a JIT-compiled function to another id.
   //
   jitCopy: function(srcId, dstId) {
+    debug("jitCopy");
     srcId = srcId|0;
     dstId = dstId|0;
     Module._jitCompiledFunctions[dstId] = Module._jitCompiledFunctions[srcId];
@@ -117,6 +127,7 @@ var LibraryJIT = {
   // it will produce a return value of zero.
   //
   jitInvoke: function(id, frame, label) {
+    debug("jitInvoke");
     id = id|0;
     label = label|0;
     frame = frame|0;
@@ -131,6 +142,7 @@ var LibraryJIT = {
   // Free a JIT-compiled function.
   //
   jitFree: function(id) {
+    debug("jitFree");
     id = id|0;
     Module._jitCompiledFunctions[id] = null;
   }
