@@ -1550,8 +1550,8 @@ class MIFrame(object):
         to handle an indirect_call that may need to be inlined."""
         if isinstance(funcbox, Const):
             sd = self.metainterp.staticdata
-            key = sd.cpu.ts.getaddr_for_box(funcbox)
-            jitcode = sd.bytecode_for_address(key)
+            fnaddr = sd.cpu.ts.getaddr_for_box(funcbox)
+            jitcode = sd.bytecode_for_address(fnaddr, calldescr)
             if jitcode is not None:
                 # we should follow calls to this graph
                 return self.metainterp.perform_call(jitcode, argboxes)
@@ -1681,7 +1681,7 @@ class MetaInterpStaticData(object):
                     return self._addr2name_values[i]
             return ''
 
-    def bytecode_for_address(self, fnaddress):
+    def bytecode_for_address(self, fnaddress, calldescr):
         if we_are_translated():
             d = self.globaldata.indirectcall_dict
             if d is None:
@@ -1690,15 +1690,22 @@ class MetaInterpStaticData(object):
                 # can change from run to run.
                 d = {}
                 for jitcode in self.indirectcalltargets:
-                    assert jitcode.fnaddr not in d
-                    d[jitcode.fnaddr] = jitcode
+                    key = self._fn_cache_key(jitcode.fnaddr, jitcode.calldescr)
+                    assert key not in d
+                    d[key] = jitcode
                 self.globaldata.indirectcall_dict = d
-            return d.get(fnaddress, None)
+            key = self._fn_cache_key(fnaddress, calldescr)
+            return d.get(key, None)
         else:
+            key = self._fn_cache_key(fnaddress, calldescr)
             for jitcode in self.indirectcalltargets:
-                if jitcode.fnaddr == fnaddress:
+                jckey = self._fn_cache_key(jitcode.fnaddr, jitcode.calldescr)
+                if key == jckey:
                     return jitcode
             return None
+
+    def _fn_cache_key(self, fnaddr, calldescr):
+        return (fnaddr, calldescr.get_result_type(), calldescr.get_arg_types())
 
     def try_to_free_some_loops(self):
         # Increase here the generation recorded by the memory manager.

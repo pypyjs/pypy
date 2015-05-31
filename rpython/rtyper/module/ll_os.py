@@ -21,6 +21,7 @@ from rpython.rtyper.lltypesystem import rffi
 from rpython.rtyper.lltypesystem import lltype
 from rpython.rtyper.tool import rffi_platform as platform
 from rpython.rlib import rposix, jit
+from rpython.translator.platform import is_host_build
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.rlib.objectmodel import specialize
 from rpython.translator import cdir
@@ -146,7 +147,7 @@ class RegisterOs(BaseLazyRegistering):
 
     def __init__(self):
         self.configure(CConfig)
-        if not _WIN32:
+        if not _WIN32 and is_host_build():
             assert self.OFF_T_SIZE == rffi.sizeof(rffi.LONGLONG)
 
         if hasattr(os, 'getpgrp'):
@@ -779,8 +780,12 @@ class RegisterOs(BaseLazyRegistering):
 
     @registering_if(os, 'initgroups')
     def register_os_initgroups(self):
+        compilation_info = ExternalCompilationInfo(
+            includes = ['grp.h']
+        )
         c_initgroups = self.llexternal('initgroups',
                                        [rffi.CCHARP, rffi.PID_T], rffi.INT,
+                                       compilation_info=compilation_info,
                                        save_err=rffi.RFFI_SAVE_ERRNO)
 
         def initgroups_llimpl(user, group):
@@ -1805,11 +1810,18 @@ class RegisterOs(BaseLazyRegistering):
 
     @registering_if(os, 'openpty')
     def register_os_openpty(self):
+        if sys.platform.startswith("linux"):
+            includes = ['pty.h']
+        elif sys.platform == "darwin":
+            includes = ['util.h']
+        else:
+            includes = []
         os_openpty = self.llexternal(
             'openpty',
             [rffi.INTP, rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.INT,
-            compilation_info=ExternalCompilationInfo(libraries=['util']),
+            compilation_info=ExternalCompilationInfo(libraries=['util'],
+                                                     includes=includes),
             save_err=rffi.RFFI_SAVE_ERRNO)
         def openpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')
@@ -1830,11 +1842,18 @@ class RegisterOs(BaseLazyRegistering):
     @registering_if(os, 'forkpty')
     def register_os_forkpty(self):
         from rpython.rlib import debug, rthread
+        if sys.platform.startswith("linux"):
+            includes = ['pty.h']
+        elif sys.platform == "darwin":
+            includes = ['util.h']
+        else:
+            includes = []
         os_forkpty = self.llexternal(
             'forkpty',
             [rffi.INTP, rffi.VOIDP, rffi.VOIDP, rffi.VOIDP],
             rffi.PID_T,
-            compilation_info=ExternalCompilationInfo(libraries=['util']),
+            compilation_info=ExternalCompilationInfo(libraries=['util'],
+                                                     includes=includes),
             save_err=rffi.RFFI_SAVE_ERRNO)
         def forkpty_llimpl():
             master_p = lltype.malloc(rffi.INTP.TO, 1, flavor='raw')

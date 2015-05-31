@@ -29,8 +29,10 @@ void LL_stack_set_length_fraction(double);
 #define LL_stack_criticalcode_stop()   (_LLstacktoobig_report_error = 1)
 
 
-#ifdef __GNUC__
-#  define PYPY_INHIBIT_TAIL_CALL()   asm("/* inhibit_tail_call */")
+#if defined(__EMSCRIPTEN__)
+#  define PYPY_INHIBIT_TAIL_CALL()   /* no raw asm for emscripten */
+#elif defined(__GNUC__)
+#  define PYPY_INHIBIT_TAIL_CALL()   asm("/* inhibit_tail_call */") 
 #else
 #  define PYPY_INHIBIT_TAIL_CALL()   /* add hints for other compilers here */
 #endif

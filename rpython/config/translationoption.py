@@ -36,6 +36,7 @@ PLATFORMS = [
     'host',
     'distutils',
     'arm',
+    'emscripten',
 ]
 
 translation_optiondescription = OptionDescription(
@@ -46,9 +47,11 @@ translation_optiondescription = OptionDescription(
     ChoiceOption("type_system", "Type system to use when RTyping",
                  ["lltype"], cmdline=None, default="lltype"),
     ChoiceOption("backend", "Backend to use for code generation",
-                 ["c"], default="c",
+                 ["c", "js"], default="c",
                  requires={
                      "c":      [("translation.type_system", "lltype")],
+                     "js":     [("translation.type_system", "lltype"),
+                                ("translation.platform", "emscripten")],
                      },
                  cmdline="-b --backend"),
 
@@ -270,6 +273,12 @@ translation_optiondescription = OptionDescription(
     ChoiceOption("platform",
                  "target platform", ['host'] + PLATFORMS, default='host',
                  cmdline='--platform',
+                 requires={"emscripten": [
+                             ("translation.gcrootfinder", "shadowstack"),
+                             ("translation.shared", False),
+                             ("translation.thread", False),
+                             ("translation.no__thread", True),
+                           ]},
                  suggests={"arm": [("translation.gcrootfinder", "shadowstack"),
                                    ("translation.jit_backend", "arm")]}),
 

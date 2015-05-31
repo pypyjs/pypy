@@ -492,7 +492,7 @@ class GcRewriterAssembler(object):
         If that succeeds, return True; you still need to write the tid.
         If that fails, return False.
         """
-        size = self.round_up_for_allocation(size)
+        size = self.gc_ll_descr.round_up_for_allocation(size)
         if not self.gc_ll_descr.can_use_nursery_malloc(size):
             return False
         #

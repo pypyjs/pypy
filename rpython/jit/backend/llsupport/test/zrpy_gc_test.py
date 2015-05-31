@@ -80,10 +80,13 @@ def compile(f, gc, **kwds):
     from rpython.annotator.listdef import s_list_of_strings
     from rpython.translator.translator import TranslationContext
     from rpython.jit.metainterp.warmspot import apply_jit
+    from rpython.translator.platform import platform, is_host_build
     from rpython.translator.c import genc
     #
     t = TranslationContext()
     t.config.translation.gc = gc
+    if not is_host_build():
+        t.platform = platform
     if gc != 'boehm':
         t.config.translation.gcremovetypeptr = True
     for name, value in kwds.items():
