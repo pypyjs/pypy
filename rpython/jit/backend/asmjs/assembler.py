@@ -102,6 +102,10 @@ class AssemblerASMJS(BaseAssembler):
         # stub method for BaseAssembler interface
         pass
 
+    def _build_malloc_slowpath(self, kind):
+        # stub method for BaseAssembler interface
+        pass
+
     def build_frame_realloc_slowpath(self):
         # stub method for BaseAssembler interface
         pass

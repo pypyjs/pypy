@@ -140,7 +140,7 @@ class EmscriptenPlatform(BasePosix):
 
     def gen_makefile(self, cfiles, eci, exe_name=None, path=None,
                      shared=False, headers_to_precompile=[],
-                     no_precompile_cfiles=[]):
+                     no_precompile_cfiles=[], icon=None):
         m = super(EmscriptenPlatform, self).gen_makefile(
             cfiles, eci, exe_name, path, shared,
             headers_to_precompile, no_precompile_cfiles,
