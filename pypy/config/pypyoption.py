@@ -39,7 +39,6 @@ working_modules.update([
 ])
 
 if sys.platform.startswith('linux') and sys.maxint > 2147483647:
-  if 0:     # XXX disabled until we fix the absurd .so mess
     working_modules.add('_vmprof')
 
 translation_modules = default_modules.copy()
@@ -330,9 +329,9 @@ def set_pypy_opt_level(config, level):
 
 def enable_allworkingmodules(config):
     if config.translation.backend == 'js':
-        modules = working_js_modules
+        modules = working_js_modules.copy()
     else:
-        modules = working_modules
+        modules = working_modules.copy()
     if config.translation.sandbox:
         modules = default_modules
     # ignore names from 'essential_modules', notably 'exceptions', which

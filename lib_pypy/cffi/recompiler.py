@@ -11,7 +11,7 @@ except NameError:    # Python 3
 
 
 class GlobalExpr:
-    def __init__(self, name, address, type_op, size=0, check_value=None):
+    def __init__(self, name, address, type_op, size=0, check_value=0):
         self.name = name
         self.address = address
         self.type_op = type_op
@@ -19,15 +19,10 @@ class GlobalExpr:
         self.check_value = check_value
 
     def as_c_expr(self):
-        return '  { "%s", (void *)%s, %s, %s },' % (
+        return '  { "%s", (void *)%s, %s, (void *)%s },' % (
             self.name, self.address, self.type_op.as_c_expr(), self.size)
 
     def as_python_expr(self):
-        if not isinstance(self.check_value, int_type):
-            raise ffiplatform.VerificationError(
-                "ffi.dlopen() will not be able to figure out the value of "
-                "constant %r (only integer constants are supported, and only "
-                "if their value are specified in the cdef)" % (self.name,))
         return "b'%s%s',%d" % (self.type_op.as_python_bytes(), self.name,
                                self.check_value)
 
@@ -149,7 +144,7 @@ class Recompiler:
                 self.cffi_types.append(tp)     # placeholder
                 for tp1 in tp.args:
                     assert isinstance(tp1, (model.VoidType,
-                                            model.PrimitiveType,
+                                            model.BasePrimitiveType,
                                             model.PointerType,
                                             model.StructOrUnionOrEnum,
                                             model.FunctionPtrType))
@@ -386,7 +381,7 @@ class Recompiler:
         prnt('#  ifdef _MSC_VER')
         prnt('     PyMODINIT_FUNC')
         prnt('#  if PY_MAJOR_VERSION >= 3')
-        prnt('     PyInit_%s(void) { return -1; }' % (base_module_name,))
+        prnt('     PyInit_%s(void) { return NULL; }' % (base_module_name,))
         prnt('#  else')
         prnt('     init%s(void) { }' % (base_module_name,))
         prnt('#  endif')
@@ -474,7 +469,7 @@ class Recompiler:
 
     def _convert_funcarg_to_c(self, tp, fromvar, tovar, errcode):
         extraarg = ''
-        if isinstance(tp, model.PrimitiveType):
+        if isinstance(tp, model.BasePrimitiveType):
             if tp.is_integer_type() and tp.name != '_Bool':
                 converter = '_cffi_to_c_int'
                 extraarg = ', %s' % tp.name
@@ -529,7 +524,7 @@ class Recompiler:
         self._prnt('  }')
 
     def _convert_expr_from_c(self, tp, var, context):
-        if isinstance(tp, model.PrimitiveType):
+        if isinstance(tp, model.BasePrimitiveType):
             if tp.is_integer_type():
                 return '_cffi_from_c_int(%s, %s)' % (var, tp.name)
             elif tp.name != 'long double':
@@ -602,6 +597,26 @@ class Recompiler:
         else:
             argname = 'args'
         #
+        # ------------------------------
+        # the 'd' version of the function, only for addressof(lib, 'func')
+        arguments = []
+        call_arguments = []
+        context = 'argument of %s' % name
+        for i, type in enumerate(tp.args):
+            arguments.append(type.get_c_name(' x%d' % i, context))
+            call_arguments.append('x%d' % i)
+        repr_arguments = ', '.join(arguments)
+        repr_arguments = repr_arguments or 'void'
+        name_and_arguments = '_cffi_d_%s(%s)' % (name, repr_arguments)
+        prnt('static %s' % (tp.result.get_c_name(name_and_arguments),))
+        prnt('{')
+        call_arguments = ', '.join(call_arguments)
+        result_code = 'return '
+        if isinstance(tp.result, model.VoidType):
+            result_code = ''
+        prnt('  %s%s(%s);' % (result_code, name, call_arguments))
+        prnt('}')
+        #
         prnt('#ifndef PYPY_VERSION')        # ------------------------------
         #
         prnt('static PyObject *')
@@ -632,10 +647,13 @@ class Recompiler:
             rng = range(len(tp.args))
             for i in rng:
                 prnt('  PyObject *arg%d;' % i)
+            prnt('  PyObject **aa;')
             prnt()
-            prnt('  if (!PyArg_ParseTuple(args, "%s:%s", %s))' % (
-                'O' * numargs, name, ', '.join(['&arg%d' % i for i in rng])))
+            prnt('  aa = _cffi_unpack_args(args, %d, "%s");' % (len(rng), name))
+            prnt('  if (aa == NULL)')
             prnt('    return NULL;')
+            for i in rng:
+                prnt('  arg%d = aa[%d];' % (i, i))
         prnt()
         #
         for i, type in enumerate(tp.args):
@@ -668,6 +686,7 @@ class Recompiler:
         # the PyPy version: need to replace struct/union arguments with
         # pointers, and if the result is a struct/union, insert a first
         # arg that is a pointer to the result.
+        difference = False
         arguments = []
         call_arguments = []
         context = 'argument of %s' % name
@@ -675,6 +694,7 @@ class Recompiler:
             indirection = ''
             if isinstance(type, model.StructOrUnion):
                 indirection = '*'
+                difference = True
             arg = type.get_c_name(' %sx%d' % (indirection, i), context)
             arguments.append(arg)
             call_arguments.append('%sx%d' % (indirection, i))
@@ -686,18 +706,22 @@ class Recompiler:
             tp_result = model.void_type
             result_decl = None
             result_code = '*result = '
-        repr_arguments = ', '.join(arguments)
-        repr_arguments = repr_arguments or 'void'
-        name_and_arguments = '_cffi_f_%s(%s)' % (name, repr_arguments)
-        prnt('static %s' % (tp_result.get_c_name(name_and_arguments),))
-        prnt('{')
-        if result_decl:
-            prnt(result_decl)
-        call_arguments = ', '.join(call_arguments)
-        prnt('  { %s%s(%s); }' % (result_code, name, call_arguments))
-        if result_decl:
-            prnt('  return result;')
-        prnt('}')
+            difference = True
+        if difference:
+            repr_arguments = ', '.join(arguments)
+            repr_arguments = repr_arguments or 'void'
+            name_and_arguments = '_cffi_f_%s(%s)' % (name, repr_arguments)
+            prnt('static %s' % (tp_result.get_c_name(name_and_arguments),))
+            prnt('{')
+            if result_decl:
+                prnt(result_decl)
+            call_arguments = ', '.join(call_arguments)
+            prnt('  { %s%s(%s); }' % (result_code, name, call_arguments))
+            if result_decl:
+                prnt('  return result;')
+            prnt('}')
+        else:
+            prnt('#  define _cffi_f_%s _cffi_d_%s' % (name, name))
         #
         prnt('#endif')        # ------------------------------
         prnt()
@@ -718,7 +742,8 @@ class Recompiler:
             meth_kind = OP_CPYTHON_BLTN_V   # 'METH_VARARGS'
         self._lsts["global"].append(
             GlobalExpr(name, '_cffi_f_%s' % name,
-                       CffiOp(meth_kind, type_index), check_value=0))
+                       CffiOp(meth_kind, type_index),
+                       size='_cffi_d_%s' % name))
 
     # ----------
     # named structs or unions
@@ -728,7 +753,9 @@ class Recompiler:
             ptr_struct_name = tp_struct.get_c_name('*')
             actual_length = '_cffi_array_len(((%s)0)->%s)' % (
                 ptr_struct_name, field_name)
-            tp_field = tp_field.resolve_length(actual_length)
+            tp_item = self._field_type(tp_struct, '%s[0]' % field_name,
+                                       tp_field.item)
+            tp_field = model.ArrayType(tp_item, actual_length)
         return tp_field
 
     def _struct_collecttype(self, tp):
@@ -746,20 +773,19 @@ class Recompiler:
         prnt('  (void)p;')
         for fname, ftype, fbitsize in tp.enumfields():
             try:
-                if (isinstance(ftype, model.PrimitiveType)
-                    and ftype.is_integer_type()) or fbitsize >= 0:
+                if ftype.is_integer_type() or fbitsize >= 0:
                     # accept all integers, but complain on float or double
                     prnt('  (void)((p->%s) << 1);' % fname)
-                elif (isinstance(ftype, model.ArrayType)
-                      and (ftype.length is None or ftype.length == '...')):
-                    # for C++: "int(*)tmp[] = &p->a;" errors out if p->a is
-                    # declared as "int[5]".  Instead, write "int *tmp = p->a;".
-                    prnt('  { %s = p->%s; (void)tmp; }' % (
-                        ftype.item.get_c_name('*tmp', 'field %r'%fname), fname))
-                else:
-                    # only accept exactly the type declared.
-                    prnt('  { %s = &p->%s; (void)tmp; }' % (
-                        ftype.get_c_name('*tmp', 'field %r'%fname), fname))
+                    continue
+                # only accept exactly the type declared, except that '[]'
+                # is interpreted as a '*' and so will match any array length.
+                # (It would also match '*', but that's harder to detect...)
+                while (isinstance(ftype, model.ArrayType)
+                       and (ftype.length is None or ftype.length == '...')):
+                    ftype = ftype.item
+                    fname = fname + '[0]'
+                prnt('  { %s = &p->%s; (void)tmp; }' % (
+                    ftype.get_c_name('*tmp', 'field %r'%fname), fname))
             except ffiplatform.VerificationError as e:
                 prnt('  /* %s */' % str(e))   # cannot verify it, ignore
         prnt('}')
@@ -940,20 +966,28 @@ class Recompiler:
         prnt()
 
     def _generate_cpy_constant_collecttype(self, tp, name):
-        is_int = isinstance(tp, model.PrimitiveType) and tp.is_integer_type()
-        if not is_int:
+        is_int = tp.is_integer_type()
+        if not is_int or self.target_is_python:
             self._do_collect_type(tp)
 
     def _generate_cpy_constant_decl(self, tp, name):
-        is_int = isinstance(tp, model.PrimitiveType) and tp.is_integer_type()
+        is_int = tp.is_integer_type()
         self._generate_cpy_const(is_int, name, tp)
 
     def _generate_cpy_constant_ctx(self, tp, name):
-        if isinstance(tp, model.PrimitiveType) and tp.is_integer_type():
+        if not self.target_is_python and tp.is_integer_type():
             type_op = CffiOp(OP_CONSTANT_INT, -1)
         else:
+            if not tp.sizeof_enabled():
+                raise ffiplatform.VerificationError(
+                    "constant '%s' is of type '%s', whose size is not known"
+                    % (name, tp._get_c_name()))
+            if self.target_is_python:
+                const_kind = OP_DLOPEN_CONST
+            else:
+                const_kind = OP_CONSTANT
             type_index = self._typesdict[tp]
-            type_op = CffiOp(OP_CONSTANT, type_index)
+            type_op = CffiOp(const_kind, type_index)
         self._lsts["global"].append(
             GlobalExpr(name, '_cffi_const_%s' % name, type_op))
 
@@ -1004,6 +1038,10 @@ class Recompiler:
 
     def _generate_cpy_macro_ctx(self, tp, name):
         if tp == '...':
+            if self.target_is_python:
+                raise ffiplatform.VerificationError(
+                    "cannot use the syntax '...' in '#define %s ...' when "
+                    "using the ABI mode" % (name,))
             check_value = None
         else:
             check_value = tp     # an integer
@@ -1018,7 +1056,8 @@ class Recompiler:
     def _global_type(self, tp, global_name):
         if isinstance(tp, model.ArrayType) and tp.length == '...':
             actual_length = '_cffi_array_len(%s)' % (global_name,)
-            tp = tp.resolve_length(actual_length)
+            tp_item = self._global_type(tp.item, '%s[0]' % global_name)
+            tp = model.ArrayType(tp_item, actual_length)
         return tp
 
     def _generate_cpy_variable_collecttype(self, tp, name):
@@ -1036,7 +1075,7 @@ class Recompiler:
         else:
             size = 0
         self._lsts["global"].append(
-            GlobalExpr(name, '&%s' % name, type_op, size, 0))
+            GlobalExpr(name, '&%s' % name, type_op, size))
 
     # ----------
     # emitting the opcodes for individual types
@@ -1047,6 +1086,11 @@ class Recompiler:
     def _emit_bytecode_PrimitiveType(self, tp, index):
         prim_index = PRIMITIVE_TO_INDEX[tp.name]
         self.cffi_types[index] = CffiOp(OP_PRIMITIVE, prim_index)
+
+    def _emit_bytecode_UnknownIntegerType(self, tp, index):
+        s = '_cffi_prim_int(sizeof(%s), (((%s)-1) << 0) <= 0)' % (
+            tp.name, tp.name)
+        self.cffi_types[index] = CffiOp(OP_PRIMITIVE, s)
 
     def _emit_bytecode_RawFunctionType(self, tp, index):
         self.cffi_types[index] = CffiOp(OP_FUNCTION, self._typesdict[tp.result])
@@ -1118,8 +1162,14 @@ def _make_c_or_py_source(ffi, module_name, preamble, target_file):
                 raise IOError
         return False     # already up-to-date
     except IOError:
-        with open(target_file, 'w') as f1:
+        tmp_file = '%s.~%d' % (target_file, os.getpid())
+        with open(tmp_file, 'w') as f1:
             f1.write(output)
+        try:
+            os.rename(tmp_file, target_file)
+        except OSError:
+            os.unlink(target_file)
+            os.rename(tmp_file, target_file)
         return True
 
 def make_c_source(ffi, module_name, preamble, target_c_file):
@@ -1129,29 +1179,45 @@ def make_c_source(ffi, module_name, preamble, target_c_file):
 def make_py_source(ffi, module_name, target_py_file):
     return _make_c_or_py_source(ffi, module_name, None, target_py_file)
 
-def _get_extension(module_name, c_file, kwds):
-    source_name = ffiplatform.maybe_relative_path(c_file)
-    return ffiplatform.get_extension(source_name, module_name, **kwds)
+def _modname_to_file(outputdir, modname, extension):
+    parts = modname.split('.')
+    try:
+        os.makedirs(os.path.join(outputdir, *parts[:-1]))
+    except OSError:
+        pass
+    parts[-1] += extension
+    return os.path.join(outputdir, *parts), parts
 
 def recompile(ffi, module_name, preamble, tmpdir='.', call_c_compiler=True,
-              c_file=None, source_extension='.c', **kwds):
+              c_file=None, source_extension='.c', extradir=None, **kwds):
     if not isinstance(module_name, str):
         module_name = module_name.encode('ascii')
     if ffi._windows_unicode:
         ffi._apply_windows_unicode(kwds)
     if preamble is not None:
         if c_file is None:
-            c_file = os.path.join(tmpdir, module_name + source_extension)
-        ext = _get_extension(module_name, c_file, kwds)
+            c_file, parts = _modname_to_file(tmpdir, module_name,
+                                             source_extension)
+            if extradir:
+                parts = [extradir] + parts
+            ext_c_file = os.path.join(*parts)
+        else:
+            ext_c_file = c_file
+        ext = ffiplatform.get_extension(ext_c_file, module_name, **kwds)
         updated = make_c_source(ffi, module_name, preamble, c_file)
         if call_c_compiler:
-            outputfilename = ffiplatform.compile(tmpdir, ext)
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                outputfilename = ffiplatform.compile('.', ext)
+            finally:
+                os.chdir(cwd)
             return outputfilename
         else:
             return ext, updated
     else:
         if c_file is None:
-            c_file = os.path.join(tmpdir, module_name + '.py')
+            c_file, _ = _modname_to_file(tmpdir, module_name, '.py')
         updated = make_py_source(ffi, module_name, c_file)
         if call_c_compiler:
             return c_file

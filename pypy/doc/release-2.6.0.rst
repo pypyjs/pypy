@@ -1,10 +1,11 @@
-=========================
-PyPy 2.6.0 - XXXXXXXXXXXX
-=========================
+========================
+PyPy 2.6.0 - Cameo Charm
+========================
 
 We're pleased to announce PyPy 2.6.0, only two months after PyPy 2.5.1.
-We are particulary happy to update `cffi`_ to version 1.0, which makes the
-popular ctypes-alternative even easier to use.
+We are particulary happy to update `cffi`_ to version 1.1, which makes the
+popular ctypes-alternative even easier to use, and to support the new vmprof_
+statistical profiler.
 
 You can download the PyPy 2.6.0 release here:
 
@@ -13,12 +14,16 @@ You can download the PyPy 2.6.0 release here:
 We would like to thank our donors for the continued support of the PyPy
 project, and for those who donate to our three sub-projects, as well as our
 volunteers and contributors.  
+
+Thanks also to Yury V. Zaytsev and David Wilson who recently started
+running nightly builds on Windows and MacOSX buildbots.
+
 We've shown quite a bit of progress, but we're slowly running out of funds.
 Please consider donating more, or even better convince your employer to donate,
 so we can finish those projects! The three sub-projects are:
 
 * `Py3k`_ (supporting Python 3.x): We have released a Python 3.2.5 compatible version
-   we call PyPy3 2.4.0, and are working toward a Python 3.3 compatible version
+  we call PyPy3 2.4.0, and are working toward a Python 3.3 compatible version
 
 * `STM`_ (software transactional memory): We have released a first working version,
   and continue to try out new promising paths of achieving a fast multithreaded Python
@@ -33,12 +38,13 @@ so we can finish those projects! The three sub-projects are:
 .. _`on bitbucket`: https://www.bitbucket.org/pypy/numpy
 
 We would also like to encourage new people to join the project. PyPy has many
-layers and we need help with all of them: `PyPy`_ and `Rpython`_ documentation
+layers and we need help with all of them: `PyPy`_ and `RPython`_ documentation
 improvements, tweaking popular `modules`_ to run on pypy, or general `help`_ with making
-Rpython's JIT even better.
+RPython's JIT even better. Nine new people contributed since the last release,
+you too could be one of them.
 
 .. _`PyPy`: http://doc.pypy.org 
-.. _`Rpython`: https://rpython.readthedocs.org
+.. _`RPython`: https://rpython.readthedocs.org
 .. _`modules`: http://doc.pypy.org/en/latest/project-ideas.html#make-more-python-modules-pypy-friendly
 .. _`help`: http://doc.pypy.org/en/latest/project-ideas.html
 
@@ -65,44 +71,51 @@ to `handle that`_. We also welcome developers with other operating systems or
 .. _`dynamic languages`: http://pypyjs.org
 
 Highlights 
-==========
+===========
 
-* Improve support for TLS 1.1 and 1.2
+* Python compatibility:
 
-* Improved object pinning in the garbage collector
+  * Improve support for TLS 1.1 and 1.2
 
-* Support for numpy's ``object`` dtype via a garbage collector hook
+  * Windows downloads now package a pypyw.exe in addition to pypy.exe
 
-* Support for numpy.can_cast and numpy.min_scalar_type as well as beginning
-  a refactoring of the internal casting rules in numpy
+  * Support for the PYTHONOPTIMIZE environment variable (impacting builtin's
+    __debug__ property)
 
-* Better support for numpy subtypes, via the __array_interface__,
-  __array_priority__, and __array_wrap__ methods (still a work-in-progress)
+  * Issues reported with our previous release were resolved_ after reports from users on
+    our issue tracker at https://bitbucket.org/pypy/pypy/issues or on IRC at
+    #pypy.
 
-* Better support for numpy ndarray.flags
+* New features:
 
-* Windows downloads now package a pypyw.exe in addition to pypy.exe
+  * Add preliminary support for a new lightweight statistical profiler
+    `vmprof`_, which has been designed to accomodate profiling JITted code
 
-* Add preliminary support for a new lightweight statistical profiler `vmprof2`_,
-  currently disabled until we work out the last JIT issues
+* Numpy:
 
-* Remove debug attributes from frames used in tracing, moving them to a debug
-  object created on demand
+  * Support for ``object`` dtype via a garbage collector hook
 
-* Internal refactoring and cleanups leading to improved JIT performance
+  * Support for .can_cast and .min_scalar_type as well as beginning
+    a refactoring of the internal casting rules 
 
-* Support for the PYTHONOPTIMIZE environment variable (impacting builtin's
-  __debug__ property)
+  * Better support for subtypes, via the __array_interface__,
+    __array_priority__, and __array_wrap__ methods (still a work-in-progress)
 
-* We continue to improve the JIT's optimizations. Our benchmark suite is now
-  over 7 times faster than cpython
+  * Better support for ndarray.flags
 
-* Issues reported with our previous release were resolved_ after reports from users on
-  our issue tracker at https://bitbucket.org/pypy/pypy/issues or on IRC at
-  #pypy.
+* Performance improvements:
 
-.. _`vmprof2`: https://vmprof.readthedocs.org
-.. _resolved: https://doc.pypy.org/en/latest/whatsnew-2.6.0.html
+  * Slight improvement in frame sizes, improving some benchmarks
+
+  * Internal refactoring and cleanups leading to improved JIT performance
+
+  * Improved IO performance of ``zlib`` and ``bz2`` modules
+
+  * We continue to improve the JIT's optimizations. Our benchmark suite is now
+    over 7 times faster than cpython
+
+.. _`vmprof`: https://vmprof.readthedocs.org
+.. _resolved: http://doc.pypy.org/en/latest/whatsnew-2.6.0.html
 
 Please try it out and let us know what you think. We welcome
 success stories, `experiments`_,  or `benchmarks`_, we know you are using PyPy, please tell us about it!
