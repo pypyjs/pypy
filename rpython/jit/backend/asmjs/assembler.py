@@ -6,6 +6,7 @@ from rpython.rlib import rgc
 from rpython.rlib.rarithmetic import r_uint, intmask
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.jit.backend.llsupport import symbolic, jitframe, rewrite, llerrno
+from rpython.jit.backend.llsupport.assembler import BaseAssembler
 from rpython.jit.backend.llsupport.regalloc import compute_vars_longevity
 from rpython.jit.backend.llsupport.descr import (unpack_fielddescr,
                                                  unpack_arraydescr,
@@ -56,16 +57,11 @@ INVALIDATION = lltype.Struct(
 INVALIDATION_PTR = lltype.Ptr(INVALIDATION)
 
 
-class AssemblerASMJS(object):
+class AssemblerASMJS(BaseAssembler):
     """Class for assembling a Trace into a compiled ASMJS function."""
 
-    def __init__(self, cpu):
-        self.cpu = cpu
-
-    def set_debug(self, v):
-        return False
-
     def setup_once(self):
+        BaseAssembler.setup_once(self)
         release_gil_func = llhelper(GILFUNCPTR,
                                     release_gil_shadowstack)
         self.release_gil_addr = self.cpu.cast_ptr_to_int(release_gil_func)
@@ -93,13 +89,43 @@ class AssemblerASMJS(object):
         pass
 
     def setup(self, looptoken):
-        pass
+        BaseAssembler.setup(self, looptoken)
 
     def teardown(self):
         pass
 
-    def assemble_loop(self, loopname, inputargs, operations, looptoken, log):
+    def _build_failure_recovery(self, exc, withfloats=False):
+        # stub method for BaseAssembler interface
+        pass
+
+    def _build_wb_slowpath(self, withcards, withfloats=False, for_frame=False):
+        # stub method for BaseAssembler interface
+        pass
+
+    def build_frame_realloc_slowpath(self):
+        # stub method for BaseAssembler interface
+        pass
+
+    def _build_propagate_exception_path(self):
+        # stub method for BaseAssembler interface
+        pass
+
+    def _build_cond_call_slowpath(self, supports_floats, callee_only):
+        # stub method for BaseAssembler interface
+        pass
+
+    def _build_stack_check_slowpath(self):
+        # stub method for BaseAssembler interface
+        pass
+
+    def _build_release_gil(self, gcrootmap):
+        # stub method for BaseAssembler interface
+        pass
+
+    def assemble_loop(self, jd_id, unique_id, logger, loopname, inputargs,
+                      operations, looptoken, log):
         """Assemble and compile a new loop function from the given trace."""
+        assert not self.cpu.HAS_CODEMAP
         #os.write(2, "ASSEMBLE LOOP START %f\n" % (time.time(),))
         # Build a new func holding this new loop.
         func = CompiledFuncASMJS(self)
@@ -2568,9 +2594,6 @@ class CompiledBlockASMJS(object):
                     gcmap[pos // WORD // 8] |= r_uint(1) << (pos % (WORD * 8))
         self.emit_store_gcmap(self.bldr, gcmap, writebarrier=writebarrier)
 
-    def genop_debug_merge_point(self, op):
-        pass
-
     def genop_jit_debug(self, op):
         pass
 
@@ -2589,6 +2612,12 @@ class CompiledBlockASMJS(object):
         addr = self._get_jsval(op.getarg(0))
         newval = js.Plus(js.HeapData(js.UInt32, addr), js.ConstInt(1))
         self.bldr.emit_store(newval, addr, js.UInt32)
+
+    def genop_enter_portal_frame(self, op):
+        self.clt.assembler.enter_portal_frame(op)
+
+    def genop_leave_portal_frame(self, op):
+        self.clt.assembler.leave_portal_frame(op)
 
     def not_implemented_op_withguard(self, op, guardop):
         self.not_implemented_op(op)
