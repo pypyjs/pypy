@@ -1240,12 +1240,12 @@ class BaseTestOptimizeBasic(BaseTestBasic):
         escape(i2)
         jump()
         """
+        # also check that the length of the forced array is known
         expected = """
         []
         p1 = new_array(3, descr=arraydescr)
         escape(p1)
-        i2 = arraylen_gc(p1)
-        escape(i2)
+        escape(3)
         jump()
         """
         self.optimize_loop(ops, expected)
@@ -3756,7 +3756,13 @@ class BaseTestOptimizeBasic(BaseTestBasic):
         i4 = int_sub(i0, %s)
         jump(i0, i2, i3, i4)
         """ % ((-sys.maxint - 1, ) * 3)
-        self.optimize_loop(ops, ops) # does not crash
+        expected = """
+        [i0, i10, i11, i12]
+        i2 = int_add(%s, i0)
+        i4 = int_sub(i0, %s)
+        jump(i0, i2, i0, i4)
+        """ % ((-sys.maxint - 1, ) * 2)
+        self.optimize_loop(ops, expected)
 
     def test_framestackdepth_overhead(self):
         ops = """

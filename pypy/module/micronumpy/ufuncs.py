@@ -13,7 +13,8 @@ from pypy.module.micronumpy.base import convert_to_array, W_NDimArray
 from pypy.module.micronumpy.ctors import numpify
 from pypy.module.micronumpy.nditer import W_NDIter, coalesce_iter
 from pypy.module.micronumpy.strides import shape_agreement
-from pypy.module.micronumpy.support import _parse_signature, product, get_storage_as_int
+from pypy.module.micronumpy.support import (_parse_signature, product, 
+        get_storage_as_int, is_rhs_priority_higher)
 from rpython.rlib.rawstorage import (raw_storage_setitem, free_raw_storage,
              alloc_raw_storage)
 from rpython.rtyper.lltypesystem import rffi, lltype
@@ -35,6 +36,21 @@ def _get_dtype(space, w_npyobj):
     else:
         assert isinstance(w_npyobj, W_NDimArray)
         return w_npyobj.get_dtype()
+
+def _find_array_wrap(*args, **kwds):
+    '''determine an appropriate __array_wrap__ function to call for the outputs.
+      If an output argument is provided, then it is wrapped
+      with its own __array_wrap__ not with the one determined by
+      the input arguments.
+     
+      if the provided output argument is already an array,
+      the wrapping function is None (which means no wrapping will
+      be done --- not even PyArray_Return).
+     
+      A NULL is placed in output_wrap for outputs that
+      should just have PyArray_Return called.
+    '''
+    raise NotImplementedError()
 
 
 class W_Ufunc(W_Root):
@@ -209,7 +225,7 @@ class W_Ufunc(W_Root):
                 axis += shapelen
         assert axis >= 0
         dtype = decode_w_dtype(space, dtype)
-        if self.comparison_func:
+        if self.bool_result:
             dtype = get_dtype_cache(space).w_booldtype
         elif dtype is None:
             dtype = find_unaryop_result_dtype(
@@ -225,6 +241,7 @@ class W_Ufunc(W_Root):
                         raise oefmt(space.w_ValueError,
                             "zero-size array to reduction operation %s "
                             "which has no identity", self.name)
+        call__array_wrap__ = True
         if shapelen > 1 and axis < shapelen:
             temp = None
             if cumulative:
@@ -257,6 +274,7 @@ class W_Ufunc(W_Root):
                                 ",".join([str(x) for x in shape]),
                                 ",".join([str(x) for x in out.get_shape()]),
                                 )
+                call__array_wrap__ = False
                 dtype = out.get_dtype()
             else:
                 out = W_NDimArray.from_shape(space, shape, dtype,
@@ -265,11 +283,15 @@ class W_Ufunc(W_Root):
                 if self.identity is not None:
                     out.fill(space, self.identity.convert_to(space, dtype))
                 return out
-            return loop.do_axis_reduce(space, shape, self.func, obj, dtype,
+            loop.do_axis_reduce(space, shape, self.func, obj, dtype,
                                        axis, out, self.identity, cumulative,
                                        temp)
+            if call__array_wrap__:
+                out = space.call_method(obj, '__array_wrap__', out)
+            return out
         if cumulative:
             if out:
+                call__array_wrap__ = False
                 if out.get_shape() != [obj.get_size()]:
                     raise OperationError(space.w_ValueError, space.wrap(
                         "out of incompatible size"))
@@ -278,8 +300,11 @@ class W_Ufunc(W_Root):
                                              w_instance=obj)
             loop.compute_reduce_cumulative(space, obj, out, dtype, self.func,
                                            self.identity)
+            if call__array_wrap__:
+                out = space.call_method(obj, '__array_wrap__', out)
             return out
         if out:
+            call__array_wrap__ = False
             if out.ndims() > 0:
                 raise oefmt(space.w_ValueError,
                             "output parameter for reduction operation %s has "
@@ -292,10 +317,16 @@ class W_Ufunc(W_Root):
             return out
         if keepdims:
             shape = [1] * len(obj_shape)
-            out = W_NDimArray.from_shape(space, [1] * len(obj_shape), dtype,
-                                         w_instance=obj)
+            out = W_NDimArray.from_shape(space, shape, dtype, w_instance=obj)
             out.implementation.setitem(0, res)
-            return out
+            res = out
+        elif not space.is_w(space.type(w_obj), space.gettypefor(W_NDimArray)):
+            # subtypes return a ndarray subtype, not a scalar
+            out = W_NDimArray.from_shape(space, [1], dtype, w_instance=obj)
+            out.implementation.setitem(0, res)
+            res = out
+        if call__array_wrap__:
+            res = space.call_method(obj, '__array_wrap__', res)
         return res
 
     def descr_outer(self, space, __args__):
@@ -321,6 +352,32 @@ class W_Ufunc(W_Root):
 def get_extobj(space):
         extobj_w = space.newlist([space.wrap(8192), space.wrap(0), space.w_None])
         return extobj_w
+
+def _has_reflected_op(space, w_obj, op):
+    refops ={ 'add': 'radd',
+            'subtract': 'rsub',
+            'multiply': 'rmul',
+            'divide': 'rdiv',
+            'true_divide': 'rtruediv',
+            'floor_divide': 'rfloordiv',
+            'remainder': 'rmod',
+            'power': 'rpow',
+            'left_shift': 'rlshift',
+            'right_shift': 'rrshift',
+            'bitwise_and': 'rand',
+            'bitwise_xor': 'rxor',
+            'bitwise_or': 'ror',
+            #/* Comparisons */
+            'equal': 'eq',
+            'not_equal': 'ne',
+            'greater': 'lt',
+            'less': 'gt',
+            'greater_equal': 'le',
+            'less_equal': 'ge',
+        }
+    if op not in refops:
+        return False
+    return space.getattr(w_obj, space.wrap('__' + refops[op] + '__')) is not None
 
 class W_Ufunc1(W_Ufunc):
     _immutable_fields_ = ["func", "bool_result"]
@@ -349,7 +406,7 @@ class W_Ufunc1(W_Ufunc):
         if dtype.is_flexible():
             raise OperationError(space.w_TypeError,
                       space.wrap('Not implemented for this type'))
-        if (self.int_only and not dtype.is_int() or
+        if (self.int_only and not (dtype.is_int() or dtype.is_object()) or
                 not self.allow_bool and dtype.is_bool() or
                 not self.allow_complex and dtype.is_complex()):
             raise oefmt(space.w_TypeError,
@@ -378,6 +435,8 @@ class W_Ufunc1(W_Ufunc):
             w_val = self.func(calc_dtype,
                               w_obj.get_scalar_value().convert_to(space, calc_dtype))
             if out is None:
+                if res_dtype.is_object():
+                    w_val = w_obj.get_scalar_value()
                 return w_val
             w_val = res_dtype.coerce(space, w_val)
             if out.is_scalar():
@@ -388,24 +447,25 @@ class W_Ufunc1(W_Ufunc):
         assert isinstance(w_obj, W_NDimArray)
         shape = shape_agreement(space, w_obj.get_shape(), out,
                                 broadcast_down=False)
+        # XXX call __array_wrap__ if out was not provided
         return loop.call1(space, shape, self.func, calc_dtype, res_dtype,
                           w_obj, out)
 
 
 class W_Ufunc2(W_Ufunc):
-    _immutable_fields_ = ["func", "comparison_func", "done_func"]
+    _immutable_fields_ = ["func", "bool_result", "done_func"]
     nin = 2
     nout = 1
     nargs = 3
     signature = None
 
     def __init__(self, func, name, promote_to_largest=False, promote_to_float=False,
-            promote_bools=False, identity=None, comparison_func=False, int_only=False,
+            promote_bools=False, identity=None, bool_result=False, int_only=False,
             allow_bool=True, allow_complex=True, complex_to_float=False):
         W_Ufunc.__init__(self, name, promote_to_largest, promote_to_float, promote_bools,
                          identity, int_only, allow_bool, allow_complex, complex_to_float)
         self.func = func
-        self.comparison_func = comparison_func
+        self.bool_result = bool_result
         if name == 'logical_and':
             self.done_func = done_if_false
         elif name == 'logical_or':
@@ -430,18 +490,36 @@ class W_Ufunc2(W_Ufunc):
         else:
             [w_lhs, w_rhs] = args_w
             w_out = None
+        if not isinstance(w_rhs, W_NDimArray):
+            # numpy implementation detail, useful for things like numpy.Polynomial
+            # FAIL with NotImplemented if the other object has
+            # the __r<op>__ method and has __array_priority__ as
+            # an attribute (signalling it can handle ndarray's)
+            # and is not already an ndarray or a subtype of the same type.
+            r_greater = is_rhs_priority_higher(space, w_lhs, w_rhs)
+            if r_greater and _has_reflected_op(space, w_rhs, self.name):
+                return space.w_NotImplemented
         w_lhs = numpify(space, w_lhs)
         w_rhs = numpify(space, w_rhs)
         w_ldtype = _get_dtype(space, w_lhs)
         w_rdtype = _get_dtype(space, w_rhs)
-        if w_ldtype.is_str() and w_rdtype.is_str() and \
-                self.comparison_func:
+        if w_ldtype.is_object() or w_rdtype.is_object():
             pass
-        elif (w_ldtype.is_str() or w_rdtype.is_str()) and \
-                self.comparison_func and w_out is None:
+        elif w_ldtype.is_str() and w_rdtype.is_str() and \
+                self.bool_result:
+            pass
+        elif (w_ldtype.is_str()) and \
+                self.bool_result and w_out is None:
+            if self.name in ('equal', 'less_equal', 'less'):
+               return space.wrap(False)
+            return space.wrap(True) 
+        elif (w_rdtype.is_str()) and \
+                self.bool_result and w_out is None:
+            if self.name in ('not_equal','less', 'less_equal'):
+               return space.wrap(True)
             return space.wrap(False)
         elif w_ldtype.is_flexible() or w_rdtype.is_flexible():
-            if self.comparison_func:
+            if self.bool_result:
                 if self.name == 'equal' or self.name == 'not_equal':
                     res = w_ldtype.eq(space, w_rdtype)
                     if not res:
@@ -463,9 +541,9 @@ class W_Ufunc2(W_Ufunc):
             w_ldtype, w_rdtype,
             promote_to_float=self.promote_to_float,
             promote_bools=self.promote_bools)
-        if (self.int_only and (not w_ldtype.is_int() or
-                               not w_rdtype.is_int() or
-                               not calc_dtype.is_int()) or
+        if (self.int_only and (not (w_ldtype.is_int() or w_ldtype.is_object()) or
+                               not (w_rdtype.is_int() or w_rdtype.is_object()) or
+                               not (calc_dtype.is_int() or calc_dtype.is_object())) or
                 not self.allow_bool and (w_ldtype.is_bool() or
                                          w_rdtype.is_bool()) or
                 not self.allow_complex and (w_ldtype.is_complex() or
@@ -479,7 +557,7 @@ class W_Ufunc2(W_Ufunc):
         else:
             out = w_out
             calc_dtype = out.get_dtype()
-        if self.comparison_func:
+        if self.bool_result:
             res_dtype = get_dtype_cache(space).w_booldtype
         else:
             res_dtype = calc_dtype
@@ -602,6 +680,7 @@ class W_UfuncGeneric(W_Ufunc):
             assert isinstance(outargs0, W_NDimArray)
             res_dtype = outargs0.get_dtype()
             new_shape = inargs0.get_shape()
+            # XXX use _find_array_wrap and wrap outargs using __array_wrap__
             if len(outargs) < 2:
                 return loop.call_many_to_one(space, new_shape, func,
                                              res_dtype, inargs, outargs[0])
@@ -643,7 +722,7 @@ class W_UfuncGeneric(W_Ufunc):
             # from frompyfunc
             pass
         # mimic NpyIter_AdvancedNew with a nditer
-        w_itershape = space.newlist([space.wrap(i) for i in iter_shape]) 
+        w_itershape = space.newlist([space.wrap(i) for i in iter_shape])
         nd_it = W_NDIter(space, space.newlist(inargs + outargs), w_flags,
                       w_op_flags, w_op_dtypes, w_casting, w_op_axes,
                       w_itershape)
@@ -694,6 +773,7 @@ class W_UfuncGeneric(W_Ufunc):
                     for i in range(self.nout):
                         w_val = space.getitem(outs, space.wrap(i))
                         outiters[i].descr_setitem(space, space.w_Ellipsis, w_val)
+        # XXX use _find_array_wrap and wrap outargs using __array_wrap__
         if len(outargs) > 1:
             return space.newtuple([convert_to_array(space, o) for o in outargs])
         return outargs[0]
@@ -749,7 +829,7 @@ class W_UfuncGeneric(W_Ufunc):
                 else:
                     raise oefmt(space.w_TypeError, "a type-string for %s " \
                         "requires 1 typecode or %d typecode(s) before and %d" \
-                        " after the -> sign, not '%s'", self.name, self.nin, 
+                        " after the -> sign, not '%s'", self.name, self.nin,
                         self.nout, type_tup)
             except KeyError:
                 raise oefmt(space.w_ValueError, "unknown typecode in" \
@@ -773,11 +853,11 @@ class W_UfuncGeneric(W_Ufunc):
             for j in range(self.nargs):
                 if dtypes[j] is not None and dtypes[j] != _dtypes[i+j]:
                     allok = False
-            if allok:    
+            if allok:
                 break
         else:
             if len(self.funcs) > 1:
-                
+
                 dtypesstr = ''
                 for d in dtypes:
                     if d is None:
@@ -787,7 +867,7 @@ class W_UfuncGeneric(W_Ufunc):
                 _dtypesstr = ','.join(['%s%s%s' % (d.byteorder, d.kind, d.elsize) \
                                 for d in _dtypes])
                 raise oefmt(space.w_TypeError,
-                     "input dtype [%s] did not match any known dtypes [%s] ", 
+                     "input dtype [%s] did not match any known dtypes [%s] ",
                      dtypesstr,_dtypesstr)
             i = 0
         # Fill in empty dtypes
@@ -807,7 +887,7 @@ class W_UfuncGeneric(W_Ufunc):
             assert isinstance(curarg, W_NDimArray)
             if len(arg_shapes[i]) != curarg.ndims():
                 # reshape
-                
+
                 sz = product(curarg.get_shape()) * curarg.get_dtype().elsize
                 with curarg.implementation as storage:
                     inargs[i] = W_NDimArray.from_shape_and_storage(
@@ -865,7 +945,7 @@ class W_UfuncGeneric(W_Ufunc):
                             "%s of gufunc was not specified",
                              self.name, name, _i, core_dim_index, self.signature)
                     target_dims.append(v)
-                arg_shapes.append(iter_shape + target_dims) 
+                arg_shapes.append(iter_shape + target_dims)
                 continue
             n = len(curarg.get_shape()) - num_dims
             if n < 0:
@@ -907,7 +987,7 @@ class W_UfuncGeneric(W_Ufunc):
                     raise oefmt(space.w_ValueError, "%s: %s operand %d has a "
                         "mismatch in its core dimension %d, with gufunc "
                         "signature %s (expected %d, got %d)",
-                         self.name, name, _i, j, 
+                         self.name, name, _i, j,
                          self.signature, matched_dims[core_dim_index],
                          dims_to_match[core_dim_index])
             #print 'adding',iter_shape,'+',dims_to_match,'to arg_shapes'
@@ -950,6 +1030,10 @@ def find_binop_result_dtype(space, dt1, dt2, promote_to_float=False,
         return dt1
     if dt1 is None:
         return dt2
+
+    if dt1.num == NPY.OBJECT or dt2.num == NPY.OBJECT:
+        return get_dtype_cache(space).w_objectdtype
+
     # dt1.num should be <= dt2.num
     if dt1.num > dt2.num:
         dt1, dt2 = dt2, dt1
@@ -1032,6 +1116,8 @@ def find_binop_result_dtype(space, dt1, dt2, promote_to_float=False,
 @jit.unroll_safe
 def find_unaryop_result_dtype(space, dt, promote_to_float=False,
         promote_bools=False, promote_to_largest=False):
+    if dt.is_object():
+        return dt
     if promote_to_largest:
         if dt.kind == NPY.GENBOOLLTR or dt.kind == NPY.SIGNEDLTR:
             if dt.elsize * 8 < LONG_BIT:
@@ -1064,6 +1150,7 @@ def find_dtype_for_scalar(space, w_obj, current_guess=None):
     uint64_dtype = get_dtype_cache(space).w_uint64dtype
     complex_dtype = get_dtype_cache(space).w_complex128dtype
     float_dtype = get_dtype_cache(space).w_float64dtype
+    object_dtype = get_dtype_cache(space).w_objectdtype
     if isinstance(w_obj, boxes.W_GenericBox):
         dtype = w_obj.get_dtype(space)
         return find_binop_result_dtype(space, dtype, current_guess)
@@ -1097,13 +1184,13 @@ def find_dtype_for_scalar(space, w_obj, current_guess=None):
                 return variable_dtype(space,
                                                    'S%d' % space.len_w(w_obj))
         return current_guess
-    raise oefmt(space.w_NotImplementedError,
-                'unable to create dtype from objects, "%T" instance not '
-                'supported', w_obj)
+    return object_dtype
+    #raise oefmt(space.w_NotImplementedError,
+    #            'unable to create dtype from objects, "%T" instance not '
+    #            'supported', w_obj)
 
 
-def ufunc_dtype_caller(space, ufunc_name, op_name, nin, comparison_func,
-                       bool_result):
+def ufunc_dtype_caller(space, ufunc_name, op_name, nin, bool_result):
     def get_op(dtype):
         try:
             return getattr(dtype.itemtype, op_name)
@@ -1121,7 +1208,7 @@ def ufunc_dtype_caller(space, ufunc_name, op_name, nin, comparison_func,
     elif nin == 2:
         def impl(res_dtype, lvalue, rvalue):
             res = get_op(res_dtype)(lvalue, rvalue)
-            if comparison_func:
+            if bool_result:
                 return dtype_cache.w_booldtype.box(res)
             return res
     return func_with_new_name(impl, ufunc_name)
@@ -1148,21 +1235,19 @@ class UfuncState(object):
             ("left_shift", "lshift", 2, {"int_only": True}),
             ("right_shift", "rshift", 2, {"int_only": True}),
 
-            ("equal", "eq", 2, {"comparison_func": True}),
-            ("not_equal", "ne", 2, {"comparison_func": True}),
-            ("less", "lt", 2, {"comparison_func": True}),
-            ("less_equal", "le", 2, {"comparison_func": True}),
-            ("greater", "gt", 2, {"comparison_func": True}),
-            ("greater_equal", "ge", 2, {"comparison_func": True}),
+            ("equal", "eq", 2, {"bool_result": True}),
+            ("not_equal", "ne", 2, {"bool_result": True}),
+            ("less", "lt", 2, {"bool_result": True}),
+            ("less_equal", "le", 2, {"bool_result": True}),
+            ("greater", "gt", 2, {"bool_result": True}),
+            ("greater_equal", "ge", 2, {"bool_result": True}),
             ("isnan", "isnan", 1, {"bool_result": True}),
             ("isinf", "isinf", 1, {"bool_result": True}),
             ("isfinite", "isfinite", 1, {"bool_result": True}),
 
-            ('logical_and', 'logical_and', 2, {'comparison_func': True,
-                                               'identity': 1}),
-            ('logical_or', 'logical_or', 2, {'comparison_func': True,
-                                             'identity': 0}),
-            ('logical_xor', 'logical_xor', 2, {'comparison_func': True}),
+            ('logical_and', 'logical_and', 2, {'identity': 1}),
+            ('logical_or', 'logical_or', 2, {'identity': 0}),
+            ('logical_xor', 'logical_xor', 2, {'bool_result': True}),
             ('logical_not', 'logical_not', 1, {'bool_result': True}),
 
             ("maximum", "max", 2),
@@ -1244,7 +1329,6 @@ class UfuncState(object):
         extra_kwargs["identity"] = identity
 
         func = ufunc_dtype_caller(space, ufunc_name, op_name, nin,
-            comparison_func=extra_kwargs.get("comparison_func", False),
             bool_result=extra_kwargs.get("bool_result", False),
         )
         if nin == 1:
@@ -1263,7 +1347,7 @@ def frompyfunc(space, w_func, nin, nout, w_dtypes=None, signature='',
      w_identity=None, name='', doc='', stack_inputs=False):
     ''' frompyfunc(func, nin, nout) #cpython numpy compatible
         frompyfunc(func, nin, nout, dtypes=None, signature='',
-                   identity=None, name='', doc='', 
+                   identity=None, name='', doc='',
                    stack_inputs=False)
 
     Takes an arbitrary Python function and returns a ufunc.
@@ -1282,7 +1366,7 @@ def frompyfunc(space, w_func, nin, nout, w_dtypes=None, signature='',
     dtypes: None or [dtype, ...] of the input, output args for each function,
          or 'match' to force output to exactly match input dtype
          Note that 'match' is a pypy-only extension to allow non-object
-         return dtypes      
+         return dtypes
     signature*: str, default=''
          The mapping of input args to output args, defining the
          inner-loop indexing. If it is empty, the func operates on scalars
@@ -1293,7 +1377,7 @@ def frompyfunc(space, w_func, nin, nout, w_dtypes=None, signature='',
     stack_inputs*: boolean, whether the function is of the form
             out = func(*in)  False
             or
-            func(*[in + out])    True 
+            func(*[in + out])    True
 
     only one of out_dtype or signature may be specified
 

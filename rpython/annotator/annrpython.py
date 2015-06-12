@@ -10,8 +10,8 @@ from rpython.flowspace.model import (
     Variable, Constant, FunctionGraph, checkgraph)
 from rpython.translator import simplify, transform
 from rpython.annotator import model as annmodel, signature
-from rpython.annotator.argument import simple_args
 from rpython.annotator.bookkeeper import Bookkeeper
+from rpython.rtyper.normalizecalls import perform_normalizations
 
 import py
 log = py.log.Producer("annrpython")
@@ -90,22 +90,14 @@ class RPythonAnnotator(object):
 
     def get_call_parameters(self, function, args_s, policy):
         desc = self.bookkeeper.getdesc(function)
-        args = simple_args(args_s)
-        result = []
-        def schedule(graph, inputcells):
-            result.append((graph, inputcells))
-            return annmodel.s_ImpossibleValue
-
         prevpolicy = self.policy
         self.policy = policy
         self.bookkeeper.enter(None)
         try:
-            desc.pycall(schedule, args, annmodel.s_ImpossibleValue)
+            return desc.get_call_parameters(args_s)
         finally:
             self.bookkeeper.leave()
             self.policy = prevpolicy
-        [(graph, inputcells)] = result
-        return graph, inputcells
 
     def annotate_helper(self, function, args_s, policy=None):
         if policy is None:
@@ -317,6 +309,8 @@ class RPythonAnnotator(object):
                     graphs[graph] = True
         for graph in graphs:
             simplify.eliminate_empty_blocks(graph)
+        if block_subset is None:
+            perform_normalizations(self)
 
 
     #___ flowing annotations in blocks _____________________

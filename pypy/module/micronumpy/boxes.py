@@ -143,6 +143,10 @@ class W_GenericBox(W_NumpyObject):
     def get_scalar_value(self):
         return self
 
+    def get_flags(self):
+        return (NPY.ARRAY_C_CONTIGUOUS | NPY.ARRAY_F_CONTIGUOUS | 
+                NPY.ARRAY_WRITEABLE | NPY.ARRAY_OWNDATA)
+
     def item(self, space):
         return self.get_dtype(space).itemtype.to_builtin_type(space, self)
 
@@ -189,13 +193,16 @@ class W_GenericBox(W_NumpyObject):
                     "'%T' object is not iterable", self)
 
     def descr_str(self, space):
-        return space.wrap(self.get_dtype(space).itemtype.str_format(self))
+        return space.wrap(self.get_dtype(space).itemtype.str_format(self, add_quotes=False))
 
     def descr_format(self, space, w_spec):
         return space.format(self.item(space), w_spec)
 
     def descr_hash(self, space):
         return space.hash(self.item(space))
+
+    def descr___array_priority__(self, space):
+        return space.wrap(0.0)
 
     def descr_index(self, space):
         return space.index(self.item(space))
@@ -607,6 +614,19 @@ class W_UnicodeBox(W_CharacterBox):
         #    arr.storage[i] = arg[i]
         return W_UnicodeBox(arr, 0, arr.dtype)
 
+class W_ObjectBox(W_GenericBox):
+    descr__new__, _get_dtype, descr_reduce = new_dtype_getter(NPY.OBJECT)
+
+    def __init__(self, w_obj):
+        self.w_obj = w_obj
+
+    def convert_to(self, space, dtype):
+        if dtype.is_bool():
+            return W_BoolBox(space.bool_w(self.w_obj))
+        return self # XXX
+
+    def descr__getattr__(self, space, w_key):
+        return space.getattr(self.w_obj, w_key)
 
 W_GenericBox.typedef = TypeDef("numpy.generic",
     __new__ = interp2app(W_GenericBox.descr__new__.im_func),
@@ -666,6 +686,8 @@ W_GenericBox.typedef = TypeDef("numpy.generic",
     __invert__ = interp2app(W_GenericBox.descr_invert),
 
     __hash__ = interp2app(W_GenericBox.descr_hash),
+
+    __array_priority__ = GetSetProperty(W_GenericBox.descr___array_priority__),
 
     tolist = interp2app(W_GenericBox.item),
     item = interp2app(W_GenericBox.descr_item),
@@ -855,4 +877,9 @@ W_StringBox.typedef = TypeDef("numpy.string_", (W_CharacterBox.typedef, W_BytesO
 W_UnicodeBox.typedef = TypeDef("numpy.unicode_", (W_CharacterBox.typedef, W_UnicodeObject.typedef),
     __new__ = interp2app(W_UnicodeBox.descr__new__unicode_box.im_func),
     __len__ = interp2app(W_UnicodeBox.descr_len),
+)
+
+W_ObjectBox.typedef = TypeDef("numpy.object_", W_ObjectBox.typedef,
+    __new__ = interp2app(W_ObjectBox.descr__new__.im_func),
+    __getattr__ = interp2app(W_ObjectBox.descr__getattr__),
 )
