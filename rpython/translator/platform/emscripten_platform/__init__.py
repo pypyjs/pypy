@@ -54,7 +54,6 @@ class EmscriptenPlatform(BasePosix):
       # Misc helpful/sensible flags.
       "-v",
       "-s", "DISABLE_EXCEPTION_CATCHING=1",
-      "-s", "GC_SUPPORT=0",
       # This disables an emscripten workaround for a nodejs bug, which has
       # the unfortunate side-effect of printing an extra newline.  It doesn't
       # seem necessary and messes with pypy's script parsing of program output.
