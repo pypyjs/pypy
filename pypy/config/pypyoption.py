@@ -51,6 +51,13 @@ translation_modules.update([
     "termios", "_minimal_curses",
 ])
 
+working_js_modules = default_modules.copy()
+working_js_modules.update(dict.fromkeys(
+    ["js", "unicodedata", "time", "_rawffi", "struct", "_md5",
+     "array", "binascii", "_warnings", "_collections", "_pypyjson",
+     "_multibytecodec", "_csv"]
+))
+
 # XXX this should move somewhere else, maybe to platform ("is this posixish"
 #     check or something)
 if sys.platform == "win32":
@@ -312,7 +319,10 @@ def set_pypy_opt_level(config, level):
 
 
 def enable_allworkingmodules(config):
-    modules = working_modules.copy()
+    if config.translation.backend == 'js':
+        modules = working_js_modules.copy()
+    else:
+        modules = working_modules.copy()
     if config.translation.sandbox:
         modules = default_modules
     # ignore names from 'essential_modules', notably 'exceptions', which
