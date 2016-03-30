@@ -69,6 +69,9 @@ class AppTestJS(object):
         assert s + 1 == 43
         assert s * 2 == 84
         assert s + js.Number(17) == js.Number(59)
+        assert 1 + s == 43
+        assert 2 * s == 84
+        assert js.Number(17) + s == js.Number(59)
 
     def test_js_object(self):
         import js

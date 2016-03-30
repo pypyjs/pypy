@@ -247,6 +247,61 @@ class W_Value(W_Root):
             h_res = support.emjs_op_bw_xor(self.handle, h_other)
         return _wrap_handle(space, h_res)
 
+    def descr__radd__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_add(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rsub__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_sub(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rmul__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_mul(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rdiv__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_div(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rtruediv__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_div(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rmod__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_mod(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rlshift__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_bw_lshift(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rrshift__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_bw_rshift(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rand__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_bw_and(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__ror__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_bw_or(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
+    def descr__rxor__(self, space, w_other):
+        with _unwrap_handle(space, w_other) as h_other:
+            h_res = support.emjs_op_bw_xor(h_other, self.handle)
+        return _wrap_handle(space, h_res)
+
     def descr__neg__(self, space):
         h_res = support.emjs_op_uminus(self.handle)
         return _wrap_handle(space, h_res)
@@ -307,6 +362,17 @@ W_Value.typedef = TypeDef(
     __and__ = interp2app(W_Value.descr__and__),
     __or__ = interp2app(W_Value.descr__or__),
     __xor__ = interp2app(W_Value.descr__xor__),
+    __radd__ = interp2app(W_Value.descr__radd__),
+    __rsub__ = interp2app(W_Value.descr__rsub__),
+    __rmul__ = interp2app(W_Value.descr__rmul__),
+    __rdiv__ = interp2app(W_Value.descr__rdiv__),
+    __rtruediv__ = interp2app(W_Value.descr__rtruediv__),
+    __rmod__ = interp2app(W_Value.descr__rmod__),
+    __rlshift__ = interp2app(W_Value.descr__rlshift__),
+    __rrshift__ = interp2app(W_Value.descr__rrshift__),
+    __rand__ = interp2app(W_Value.descr__rand__),
+    __ror__ = interp2app(W_Value.descr__ror__),
+    __rxor__ = interp2app(W_Value.descr__rxor__),
     __neg__ = interp2app(W_Value.descr__neg__),
     __pos__ = interp2app(W_Value.descr__pos__),
     __invert__ = interp2app(W_Value.descr__invert__),
@@ -973,7 +1039,7 @@ def new(space, w_fn, args_w):
 
 
 def equal(space, w_lhs, w_rhs):
-    """Invoking the javascript "==" operator betwee two values.
+    """Invoke the javascript "==" operator between two values.
 
     The default equality operator for js.Value objects is mapped to
     javascript's strict "===" operator, for what are hopefully obvious
