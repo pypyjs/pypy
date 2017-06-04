@@ -16,7 +16,7 @@ def find_executable(filename, environ=None):
     for dirpath in path:
         dirpath = os.path.abspath(dirpath.strip())
         filepath = os.path.normpath(os.path.join(dirpath, filename))
-        if os.path.exists(filepath):
+        if os.path.isfile(filepath):
             return filepath
     return None
 
