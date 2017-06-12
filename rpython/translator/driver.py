@@ -528,7 +528,18 @@ class TranslationDriver(SimpleTaskEngine):
 
     task_source_js = task_source_c
 
-    task_compile_js = task_compile_c
+    @taskdef(['source_js'], "Compiling js source")
+    def task_compile_js(self):
+        self.task_compile_c()
+        # We also need to copy supporting files such as the
+        # .wasm and .mem file that might have been generated.
+        base_exe = str(self.cbuilder.executable_name)[:-2]
+        for suffix in ("asm.js", "wasm", "wast", "js.mem"):
+            src = base_exe + suffix
+            if os.path.exists(src):
+                dst = os.path.join(self.compute_exe_name().dirname,
+                                   os.path.basename(src))
+                shutil_copy(src, dst)
 
     @taskdef([STACKCHECKINSERTION, '?'+BACKENDOPT, RTYPE], "LLInterpreting")
     def task_llinterpret_lltype(self):

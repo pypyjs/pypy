@@ -178,6 +178,9 @@ class EmscriptenPlatform(BasePosix):
         ldflags.extend([
             "-s", repr("EXPORTED_FUNCTIONS=%s" % (exports,)),
         ])
+        # Allow the final build to generate a separate memory file.
+        idx = ldflags.index("--memory-init-file")
+        del ldflags[idx : idx + 2]
         # Do more aggressive (hence more expensive) optimization for final
         # linkage.  Note that this only applies to emscripten itself; llvm
         # still sees "-Os" due to separate use of --llvm-opts.
@@ -191,6 +194,13 @@ class EmscriptenPlatform(BasePosix):
         # optimizations to be performed.
         idx = ldflags.index("--llvm-opts")
         ldflags[idx + 1] = repr(["-Oz"] + self.llvm_opts)
+        # Enable WebAssembly for the final build step.
+        # Doing it only on the final exe makes it quicker and simpler
+        # to run intermedite output steps during the build.
+        ldflags.extend([
+            "-s", "WASM=1",
+            "-s", "\"BINARYEN_METHOD='native-wasm,asmjs'\"",
+        ])
         # Ensure that --llvm-opts appears properly quoted in the makefile.
         idx = ldflags.index("--llvm-opts")
         ldflags[idx + 1] = repr(ldflags[idx + 1])
